@@ -1,4 +1,5 @@
-# Environnement Python isole
+# Environnement Python isole (plusieurs centaines de Mo, se recree
+# avec installer.bat)
 venv/
 __pycache__/
 *.pyc
@@ -8,8 +9,13 @@ build/
 dist/
 *.spec
 
-# Journal d'execution, propre a chaque machine
+# Journaux, propres a chaque machine
 terminal.log
+installation.log
+
+# Contient le PATH utilisateur, donc le nom de compte Windows
+# et la liste des logiciels installes. Ne se publie pas.
+path_utilisateur_sauvegarde.txt
 
 # Client controleur NVDA : binaire externe, a recuperer chez NV Access
 # (voir LISEZMOI.md). On ne versionne pas les binaires tiers.
