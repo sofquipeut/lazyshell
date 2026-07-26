@@ -1,0 +1,19 @@
+# Environnement Python isole
+venv/
+__pycache__/
+*.pyc
+
+# Production PyInstaller
+build/
+dist/
+*.spec
+
+# Journal d'execution, propre a chaque machine
+terminal.log
+
+# Client controleur NVDA : binaire externe, a recuperer chez NV Access
+# (voir LISEZMOI.md). On ne versionne pas les binaires tiers.
+nvdaControllerClient*.dll
+
+# Reglages locaux d'editeur
+.vscode/
