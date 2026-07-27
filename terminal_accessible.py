@@ -457,6 +457,7 @@ class Reglages:
         self.sons = True
         self.afficher_horodatage = False
         self.listing_lisible = True
+        self.suivre_sortie = False
 
 
 # --------------------------------------------------------------------------
@@ -487,6 +488,7 @@ Raccourcis :
   Ctrl+Maj+D          changer de répertoire courant
   Ctrl+Maj+N          listing amélioré (nom en tête de ligne)
   Ctrl+Maj+R          relire la saisie en cours
+  Ctrl+Maj+U          aller automatiquement à la sortie après chaque commande
   Ctrl+Maj+T          tester l'annonce vocale
   Ctrl+T              nouvelle session
   Ctrl+Tab            session suivante
@@ -754,7 +756,16 @@ class PanneauSession(wx.Panel):
         # et l'annonce s'en servent au moment de la création du bloc.
         self._duree = resultat.duree
         self._interrompue = resultat.interrompue
-        self.ajouter_bloc(commande, sortie, resultat.code_retour)
+        bloc = self.ajouter_bloc(commande, sortie, resultat.code_retour)
+
+        # Un message braille est fugace : il s'efface au bout de quelques
+        # secondes. En posant le curseur sur la ligne d'en-tête du bloc,
+        # le statut devient au contraire durable sous les doigts, puisque
+        # l'afficheur suit le curseur.
+        if self.reglages.suivre_sortie:
+            self.sortie.SetFocus()
+            self.sortie.SetInsertionPoint(bloc.debut + 1)
+            self.sortie.ShowPosition(bloc.debut + 1)
 
     def interrompre(self) -> None:
         if not self.en_cours:
@@ -996,6 +1007,15 @@ class Fenetre(wx.Frame):
         self.Bind(wx.EVT_MENU,
                   lambda e: self.changer_verbosite(),
                   m_affichage.Append(wx.ID_ANY, "Niveau de &verbosité\tCtrl+Shift+V"))
+        self.item_suivre = m_affichage.Append(
+            wx.ID_ANY, "Aller a&utomatiquement à la sortie\tCtrl+Shift+U",
+            "Après chaque commande, place le curseur sur l'en-tête du bloc",
+            wx.ITEM_CHECK,
+        )
+        self.item_suivre.Check(self.reglages.suivre_sortie)
+        self.Bind(wx.EVT_MENU,
+                  lambda e: self.basculer_suivi(),
+                  self.item_suivre)
         self.item_listing = m_affichage.Append(
             wx.ID_ANY, "Listing a&mélioré\tCtrl+Shift+N",
             "Place le nom du fichier en tête de ligne dans dir et ls",
@@ -1191,6 +1211,14 @@ class Fenetre(wx.Frame):
         if panneau is not None:
             panneau.repeter_saisie()
 
+    def basculer_suivi(self):
+        self.reglages.suivre_sortie = not self.reglages.suivre_sortie
+        self.item_suivre.Check(self.reglages.suivre_sortie)
+        etat = "activé" if self.reglages.suivre_sortie else "désactivé"
+        self.SetStatusText(f"Suivi de la sortie {etat}")
+        self.voix.dire(f"Suivi de la sortie {etat}.", interrompre=True)
+        logging.info("Suivi de la sortie %s", etat)
+
     def basculer_listing(self):
         self.reglages.listing_lisible = not self.reglages.listing_lisible
         self.item_listing.Check(self.reglages.listing_lisible)
@@ -1292,6 +1320,10 @@ class Fenetre(wx.Frame):
 
         if ctrl and maj and code == ord("D"):
             self.changer_repertoire()
+            return
+
+        if ctrl and maj and code == ord("U"):
+            self.basculer_suivi()
             return
 
         if ctrl and maj and code == ord("R"):
