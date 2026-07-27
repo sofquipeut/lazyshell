@@ -68,8 +68,10 @@ L'environnement Python est dans `venv`. Utiliser
 - **Palier 0, fait** — interface, sessions, modèle de blocs, navigation,
   copie, couche vocale, journal. L'exécution des commandes est simulée dans
   `PanneauSession.executer()`.
-- **Palier 1, à faire** — exécution locale réelle en tâche de fond,
-  interruption par Ctrl+Pause, détection des invites de saisie.
+- **Palier 1, fait** — exécution locale réelle en tâche de fond (PowerShell
+  via `execution.ExecuteurLocal`), interruption par Ctrl+Pause, historique,
+  détection des invites de saisie (fragment de ligne sans retour à la ligne,
+  silencieux plus de 1,5 s) ouvrant une boîte de dialogue accessible.
 - **Palier 2, à faire** — SSH par Paramiko, profils de connexion,
   identifiants dans le Gestionnaire d'identifiants Windows.
 - **Palier 3, à faire** — exécutable final.

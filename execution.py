@@ -98,6 +98,14 @@ def reecrire_listing(commande: str) -> str | None:
 # flux : un processus petit-enfant ayant survécu les garderait ouverts.
 DELAI_ABANDON_LECTURE = 3.0
 
+# Silence, sur un fragment de ligne encore incomplet (donc pas encore une
+# ligne au sens de sur_ligne), au-delà duquel on soupçonne une invite de
+# saisie plutôt qu'une commande simplement lente. Une invite typique
+# (« Mot de passe : », « Continuer ? [O/n] ») n'envoie jamais de retour à
+# la ligne : elle reste sinon invisible à un lecteur d'écran, puisque rien
+# ne la distingue d'une commande qui prend son temps.
+SEUIL_INVITE = 1.5
+
 
 @dataclass
 class Resultat:
@@ -167,6 +175,7 @@ class ExecuteurLocal:
         repertoire: str | None = None,
         sur_ligne: Callable[[str, bool], None] | None = None,
         sur_lenteur: Callable[[], None] | None = None,
+        sur_invite: Callable[[str], str | None] | None = None,
         listing_lisible: bool = True,
     ) -> Resultat:
         """Lance la commande et attend sa fin.
@@ -176,7 +185,10 @@ class ExecuteurLocal:
         sur_ligne(texte, est_erreur) est appelée à chaque ligne produite,
         depuis un thread de lecture. sur_lenteur() est appelée une seule
         fois si la commande dépasse le seuil, pour signaler qu'elle
-        travaille encore.
+        travaille encore. sur_invite(texte) est appelée, et son résultat
+        attendu, quand un fragment de ligne reste en silence au-delà de
+        SEUIL_INVITE : elle doit renvoyer le texte à transmettre au
+        processus, ou None si rien ne doit être envoyé.
         """
         debut = time.monotonic()
         logging.info("Exécution [%s] : %s", self.nom_shell, commande)
@@ -186,7 +198,7 @@ class ExecuteurLocal:
             cwd=repertoire,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,   # rien à lire : évite un blocage muet
+            stdin=subprocess.PIPE,      # nécessaire pour répondre à une invite
             creationflags=CREATE_NO_WINDOW,
             text=True,
             encoding="utf-8",
@@ -211,13 +223,47 @@ class ExecuteurLocal:
         tronquee = False
         fil = queue.Queue()
 
+        # Fragment de ligne encore incomplet, par flux (False = stdout,
+        # True = stderr). Lu caractère par caractère plutôt que ligne par
+        # ligne : une invite sans retour à la ligne ne serait sinon jamais
+        # produite par l'itérateur, qui attend indéfiniment le \n.
+        #
+        # "tampon" reste la même liste mutée en place (append/clear) : la
+        # reconstituer en chaîne à chaque caractère coûterait O(n²) sur une
+        # ligne longue sans retour à la ligne. On ne fait le join que
+        # lorsqu'une ligne se termine ou qu'une invite est soupçonnée.
+        verrou_fragments = threading.Lock()
+        fragments = {
+            False: {"tampon": [], "temps": 0.0, "signale": False},
+            True: {"tampon": [], "temps": 0.0, "signale": False},
+        }
+
         def lire(flux, est_erreur: bool):
+            info = fragments[est_erreur]
             try:
-                for ligne in flux:
-                    fil.put((ligne.rstrip("\n"), est_erreur))
+                while True:
+                    caractere = flux.read(1)
+                    if caractere == "":
+                        break
+                    if caractere == "\n":
+                        with verrou_fragments:
+                            texte = "".join(info["tampon"])
+                            info["tampon"].clear()
+                            info["signale"] = False
+                        fil.put((texte, est_erreur))
+                    else:
+                        with verrou_fragments:
+                            info["tampon"].append(caractere)
+                            info["temps"] = time.monotonic()
+                            info["signale"] = False
             except Exception:
                 logging.exception("Lecture du flux interrompue")
             finally:
+                with verrou_fragments:
+                    texte_restant = "".join(info["tampon"])
+                    info["tampon"].clear()
+                if texte_restant:
+                    fil.put((texte_restant, est_erreur))
                 fil.put(None)
 
         lecteurs = [
@@ -258,6 +304,27 @@ class ExecuteurLocal:
                 ):
                     prevenu = True
                     sur_lenteur()
+
+                if sur_invite is not None and processus.poll() is None:
+                    candidat = None
+                    with verrou_fragments:
+                        for info in fragments.values():
+                            if (
+                                info["tampon"]
+                                and not info["signale"]
+                                and time.monotonic() - info["temps"] > SEUIL_INVITE
+                            ):
+                                info["signale"] = True
+                                candidat = "".join(info["tampon"])
+                                break
+                    if candidat is not None:
+                        reponse = sur_invite(candidat)
+                        if reponse is not None and processus.stdin is not None:
+                            try:
+                                processus.stdin.write(reponse + "\n")
+                                processus.stdin.flush()
+                            except Exception:
+                                logging.exception("Écriture sur stdin impossible")
                 continue
 
             if element is None:

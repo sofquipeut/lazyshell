@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import logging
+import re
 import sys
 import threading
 import time
@@ -53,6 +54,10 @@ LIGNES_ERREUR = 15             # sur code de retour non nul
 SEUIL_DUREE_ANNONCEE = 3.0     # en deçà, la durée n'est pas mentionnée
 LONGUEUR_COMMANDE_ENTETE = 60  # au-delà, la commande est tronquée
                                # dans l'en-tête et rappelée en entier
+
+# Une invite reconnue comme mot de passe masque la saisie : elle n'a pas
+# besoin d'être vue, et le braille ne devrait pas l'afficher en clair.
+MOTIF_MOT_DE_PASSE = re.compile(r"password|mot de passe|passphrase", re.IGNORECASE)
 
 
 # --------------------------------------------------------------------------
@@ -470,10 +475,14 @@ Terminal accessible, palier 1.
 Les commandes sont exécutées réellement, en local, via PowerShell.
 Aucune fenêtre de console n'apparaît.
 
+Si une commande semble attendre une saisie (mot de passe, confirmation),
+une boîte de dialogue accessible s'ouvre automatiquement pour y répondre.
+
 Raccourcis :
   Entrée              envoyer la commande
   Maj+Entrée          saut de ligne dans la saisie (commande multiligne)
-  Ctrl+Pause          interrompre la commande en cours
+  Ctrl+Maj+K          interrompre la commande en cours
+  Ctrl+Pause          idem, si cette touche existe sur ton clavier
   F6                  basculer entre saisie et sortie
   Échap               revenir au champ de saisie
   Flèche haut / bas   historique des commandes, quand le curseur est
@@ -519,6 +528,7 @@ class PanneauSession(wx.Panel):
         self.repertoire = str(Path.home())
         self._commande_en_cours = ""
         self._debut = 0.0
+        self._invite_boite: wx.TextEntryDialog | None = None
 
         police = wx.Font(wx.FontInfo(11).Family(wx.FONTFAMILY_TELETYPE))
 
@@ -551,32 +561,6 @@ class PanneauSession(wx.Panel):
 
         self.saisie.Bind(wx.EVT_KEY_DOWN, self.sur_touche_saisie)
         self.sortie.Bind(wx.EVT_CHAR, self.sur_frappe_dans_sortie)
-
-        # Mémorise le dernier champ actif, pour le restaurer au retour
-        # d'un Alt+Tab : sans cela le focus revient sur la fenêtre
-        # elle-même et NVDA n'annonce plus rien d'exploitable.
-        self._dernier_focus = self.saisie
-        for champ in (self.saisie, self.sortie):
-            champ.Bind(
-                wx.EVT_SET_FOCUS,
-                lambda evt, c=champ: self._noter_focus(evt, c),
-            )
-
-    def _noter_focus(self, evt, champ):
-        self._dernier_focus = champ
-        evt.Skip()
-
-    def restaurer_focus(self):
-        """Redonne le focus au dernier champ actif de cette session."""
-        cible = self._dernier_focus or self.saisie
-        try:
-            if cible and not cible.IsBeingDeleted():
-                cible.SetFocus()
-                return
-        except RuntimeError:
-            pass                      # contrôle détruit entre-temps
-        if self.saisie:
-            self.saisie.SetFocus()
 
     # -- saisie ------------------------------------------------------------
 
@@ -714,7 +698,7 @@ class PanneauSession(wx.Panel):
         """
         if self.en_cours:
             self.voix.dire(
-                "Une commande est déjà en cours. Ctrl+Pause pour l'interrompre.",
+                "Une commande est déjà en cours. Ctrl+Maj+K pour l'interrompre.",
                 interrompre=True,
             )
             return
@@ -729,6 +713,7 @@ class PanneauSession(wx.Panel):
                 commande,
                 repertoire=self.repertoire,
                 sur_lenteur=lambda: wx.CallAfter(self._signaler_lenteur),
+                sur_invite=self._repondre_invite,
                 listing_lisible=self.reglages.listing_lisible,
             )
             wx.CallAfter(self._commande_terminee, commande, resultat)
@@ -742,6 +727,35 @@ class PanneauSession(wx.Panel):
         self.voix.dire(braille="En cours...")
         if self.reglages.sons:
             bip_travail()
+
+    def _repondre_invite(self, texte: str) -> str | None:
+        """Appelée depuis le thread d'exécution : ouvre une boîte de
+        dialogue accessible et bloque jusqu'à la réponse.
+
+        Un contrôle Win32 natif est lu directement par NVDA dès qu'il
+        prend le focus : aucune annonce manuelle n'est nécessaire ici.
+        """
+        logging.info("Invite de saisie détectée : %s", texte)
+        resultat: dict[str, str | None] = {"valeur": None}
+        evenement = threading.Event()
+
+        def ouvrir():
+            style = wx.OK | wx.CANCEL | wx.CENTRE
+            if MOTIF_MOT_DE_PASSE.search(texte):
+                style |= wx.TE_PASSWORD
+            boite = wx.TextEntryDialog(
+                self, texte, f"Saisie attendue — {self.nom}", style=style,
+            )
+            self._invite_boite = boite
+            code = boite.ShowModal()
+            resultat["valeur"] = boite.GetValue() if code == wx.ID_OK else None
+            boite.Destroy()
+            self._invite_boite = None
+            evenement.set()
+
+        wx.CallAfter(ouvrir)
+        evenement.wait()
+        return resultat["valeur"]
 
     def _commande_terminee(self, commande: str, resultat: Resultat) -> None:
         """Retour dans le thread principal : on peut toucher à l'interface."""
@@ -772,6 +786,11 @@ class PanneauSession(wx.Panel):
             self.voix.dire("Aucune commande en cours.", interrompre=True)
             return
         self.voix.dire("Interruption demandée.", interrompre=True)
+        # Une invite en attente laisserait sinon l'utilisateur bloqué sur
+        # une boîte de dialogue orpheline pendant que le processus est tué.
+        boite = self._invite_boite
+        if boite is not None:
+            wx.CallAfter(boite.EndModal, wx.ID_CANCEL)
         threading.Thread(target=self.executeur.interrompre, daemon=True).start()
 
     # -- blocs -------------------------------------------------------------
@@ -860,6 +879,73 @@ class PanneauSession(wx.Panel):
 
 
 # --------------------------------------------------------------------------
+# Boîte de dialogue : liste des blocs
+# --------------------------------------------------------------------------
+
+class DialogueListeBlocs(wx.Dialog):
+    """Liste des blocs, avec un bouton Copier accessible au Tab.
+
+    wx.SingleChoiceDialog ne laisse pas de place pour un bouton
+    supplémentaire : on reconstitue la même disposition à la main pour
+    pouvoir copier un bloc sans d'abord y aller.
+    """
+
+    def __init__(self, parent, blocs: list[Bloc], voix: Voix):
+        super().__init__(
+            parent, title="Liste des blocs",
+            style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
+        )
+        self.blocs = blocs
+        self.voix = voix
+        self.bloc_choisi: Bloc | None = None
+
+        etiquette = wx.StaticText(self, label="&Blocs :")
+        self.liste = wx.ListBox(self, choices=[b.libelle_liste() for b in blocs])
+        self.liste.SetSelection(len(blocs) - 1)
+        self.liste.Bind(wx.EVT_LISTBOX_DCLICK, self._sur_aller)
+
+        bouton_aller = wx.Button(self, label="&Aller au bloc")
+        bouton_aller.SetDefault()
+        bouton_aller.Bind(wx.EVT_BUTTON, self._sur_aller)
+        bouton_copier = wx.Button(self, label="&Copier le bloc")
+        bouton_copier.Bind(wx.EVT_BUTTON, self._sur_copier)
+        bouton_fermer = wx.Button(self, id=wx.ID_CANCEL, label="Fer&mer")
+
+        boutons = wx.BoxSizer(wx.HORIZONTAL)
+        boutons.Add(bouton_aller, 0, wx.RIGHT, 6)
+        boutons.Add(bouton_copier, 0, wx.RIGHT, 6)
+        boutons.Add(bouton_fermer, 0)
+
+        boite = wx.BoxSizer(wx.VERTICAL)
+        boite.Add(etiquette, 0, wx.LEFT | wx.RIGHT | wx.TOP, 8)
+        boite.Add(self.liste, 1, wx.EXPAND | wx.ALL, 8)
+        boite.Add(boutons, 0, wx.ALIGN_RIGHT | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+        self.SetSizer(boite)
+        self.SetSize((480, 360))
+        self.liste.SetFocus()
+
+    def _bloc_selectionne(self) -> Bloc | None:
+        index = self.liste.GetSelection()
+        if index == wx.NOT_FOUND:
+            return None
+        return self.blocs[index]
+
+    def _sur_aller(self, evt):
+        self.bloc_choisi = self._bloc_selectionne()
+        self.EndModal(wx.ID_OK)
+
+    def _sur_copier(self, evt):
+        bloc = self._bloc_selectionne()
+        if bloc is None:
+            return
+        if copier_presse_papiers(bloc.texte_complet()):
+            self.voix.dire(
+                f"Bloc {bloc.numero} copié, {decompte(bloc.nb_lignes)}.",
+                interrompre=True,
+            )
+
+
+# --------------------------------------------------------------------------
 # Fenêtre principale
 # --------------------------------------------------------------------------
 
@@ -896,33 +982,28 @@ class Fenetre(wx.Frame):
         evt.Skip()
 
     def sur_activation(self, evt):
-        """Au retour d'un Alt+Tab, redonne le focus au dernier champ actif.
+        """Au retour d'un Alt+Tab, redonne toujours le focus à la saisie.
 
-        Sans cela le focus atterrit sur la fenêtre elle-même : NVDA
-        annonce le titre et rien d'autre, et on ne sait plus où l'on est.
-        Le CallAfter est nécessaire, car Windows repositionne encore le
+        Sans cela le focus atterrit sur la fenêtre elle-même, ou reste sur
+        un endroit imprévisible selon ce que Windows choisit de restaurer :
+        dans les deux cas NVDA n'annonce rien d'exploitable. Plutôt que de
+        deviner où l'utilisateur se trouvait avant de basculer d'appli, on
+        revient systématiquement au champ de saisie de commandes.
+        Le CallLater est nécessaire, car Windows repositionne encore le
         focus après cet événement.
         """
         if evt.GetActive():
-            # CallAfter ne suffit pas : Windows repositionne encore le
-            # focus après cet événement, et notre appel est écrasé. Un
-            # court délai laisse le système finir avant qu'on intervienne.
             wx.CallLater(80, self.rendre_focus_au_champ)
         evt.Skip()
 
     def rendre_focus_au_champ(self):
-        """Pose le focus sur le dernier champ actif de la session courante."""
+        """Pose le focus sur le champ de saisie de la session courante."""
         if not self:                 # fenêtre détruite entre-temps
             return
         panneau = self.session()
         if panneau is None:
             return
-        actuel = wx.Window.FindFocus()
-        # Si le focus est déjà sur un contrôle utile, ne rien forcer :
-        # l'utilisateur peut être volontairement dans la barre d'onglets.
-        if actuel in (panneau.saisie, panneau.sortie, self.carnet):
-            return
-        panneau.restaurer_focus()
+        panneau.saisie.SetFocus()
 
     def sur_fermeture(self, evt):
         """Une commande en cours doit être tuée : sinon le processus
@@ -964,7 +1045,7 @@ class Fenetre(wx.Frame):
         m_session.AppendSeparator()
         self.Bind(wx.EVT_MENU,
                   lambda e: self.interrompre_commande(),
-                  m_session.Append(wx.ID_ANY, "&Interrompre la commande\tCtrl+Pause"))
+                  m_session.Append(wx.ID_ANY, "&Interrompre la commande\tCtrl+Shift+K"))
         self.Bind(wx.EVT_MENU,
                   lambda e: self.changer_repertoire(),
                   m_session.Append(wx.ID_ANY, "Changer de &répertoire\tCtrl+Shift+D"))
@@ -1037,6 +1118,9 @@ class Fenetre(wx.Frame):
         self.Bind(wx.EVT_MENU,
                   lambda e: self.effacer_sortie(),
                   m_affichage.Append(wx.ID_ANY, "&Effacer la sortie"))
+        self.Bind(wx.EVT_MENU,
+                  lambda e: self.vider_historique(),
+                  m_affichage.Append(wx.ID_ANY, "Vider l'&historique des commandes"))
         barre.Append(m_affichage, "&Affichage")
 
         m_aide = wx.Menu()
@@ -1169,13 +1253,9 @@ class Fenetre(wx.Frame):
         if panneau is None or not panneau.blocs:
             self.voix.dire("Aucun bloc.")
             return
-        choix = [b.libelle_liste() for b in panneau.blocs]
-        with wx.SingleChoiceDialog(
-            self, "Choisissez un bloc :", "Liste des blocs", choix
-        ) as boite:
-            boite.SetSelection(len(choix) - 1)
-            if boite.ShowModal() == wx.ID_OK:
-                panneau.aller_au_bloc(panneau.blocs[boite.GetSelection()])
+        with DialogueListeBlocs(self, panneau.blocs, self.voix) as boite:
+            if boite.ShowModal() == wx.ID_OK and boite.bloc_choisi is not None:
+                panneau.aller_au_bloc(boite.bloc_choisi)
 
     def changer_verbosite(self):
         self.reglages.verbosite = (self.reglages.verbosite + 1) % 3
@@ -1245,6 +1325,16 @@ class Fenetre(wx.Frame):
         panneau.blocs.clear()
         self.voix.dire("Sortie effacée.", interrompre=True)
 
+    def vider_historique(self):
+        panneau = self.session()
+        if panneau is None:
+            return
+        panneau.historique.clear()
+        panneau.index_historique = 0
+        panneau._brouillons.clear()
+        self.voix.dire("Historique des commandes vidé.", interrompre=True)
+        logging.info("[%s] historique des commandes vidé", panneau.nom)
+
     # -- divers ------------------------------------------------------------
 
     def tester_voix(self):
@@ -1313,6 +1403,15 @@ class Fenetre(wx.Frame):
             return
 
         if ctrl and code in (wx.WXK_PAUSE, wx.WXK_CANCEL):
+            panneau = self.session()
+            if panneau is not None:
+                panneau.interrompre()
+            return
+
+        # Second raccourci pour interrompre : la touche Pause est absente
+        # ou remappée sur certains claviers, en particulier pour un
+        # utilisateur qui ne s'en sert jamais et l'a réaffectée ailleurs.
+        if ctrl and maj and code == ord("K"):
             panneau = self.session()
             if panneau is not None:
                 panneau.interrompre()
