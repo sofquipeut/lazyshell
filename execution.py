@@ -406,6 +406,11 @@ class ExecuteurLocal:
                 return False
         return True
 
+    def fermer(self) -> None:
+        """Rien à fermer : chaque commande relance et referme son propre
+        processus. N'existe que pour respecter le même contrat que
+        ExecuteurSSH, dont la connexion persistante doit l'être."""
+
 
 def _chercher_dans_path(nom: str) -> str | None:
     import shutil

@@ -23,3 +23,11 @@ nvdaControllerClient*.dll
 
 # Reglages locaux d'editeur
 .vscode/
+
+# Donnees SSH propres a chaque utilisateur : profils de connexion (nom
+# d'hote, utilisateur) et cles d'hotes memorisees. Aucun secret dedans
+# (mots de passe/passphrases vont dans le Gestionnaire d'identifiants
+# Windows via keyring), mais ca reste des informations sur des serveurs
+# reels a ne pas publier.
+profils_ssh.json
+hotes_ssh_connus

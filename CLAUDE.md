@@ -72,8 +72,11 @@ L'environnement Python est dans `venv`. Utiliser
   via `execution.ExecuteurLocal`), interruption par Ctrl+Pause, historique,
   détection des invites de saisie (fragment de ligne sans retour à la ligne,
   silencieux plus de 1,5 s) ouvrant une boîte de dialogue accessible.
-- **Palier 2, à faire** — SSH par Paramiko, profils de connexion,
-  identifiants dans le Gestionnaire d'identifiants Windows.
+- **Palier 2, fait** — SSH par Paramiko (`ssh.ExecuteurSSH`, même contrat
+  que `ExecuteurLocal`), profils de connexion (`profils_ssh.json`, non
+  secrets), identifiants dans le Gestionnaire d'identifiants Windows via
+  `keyring`, mémorisation de la clé d'hôte à la première connexion
+  (`hotes_ssh_connus`, jamais le known_hosts de l'utilisateur).
 - **Palier 3, à faire** — exécutable final.
 
 ## Consignes de travail

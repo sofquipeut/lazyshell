@@ -32,9 +32,18 @@ from pathlib import Path
 import wx
 
 from execution import ExecuteurLocal, Resultat
+from ssh import (
+    ExecuteurSSH,
+    ProfilConnexion,
+    charger_profils,
+    enregistrer_profils,
+    enregistrer_secret,
+    lire_secret,
+    supprimer_secret,
+)
 
 APP_NOM = "Terminal accessible"
-VERSION = "0.2 (palier 1)"
+VERSION = "0.3 (palier 2)"
 
 # Niveaux de verbosité de l'annonce vocale
 VERBOSITE_RESUME = 0
@@ -470,10 +479,11 @@ class Reglages:
 # --------------------------------------------------------------------------
 
 MESSAGE_ACCUEIL = """\
-Terminal accessible, palier 1.
+Terminal accessible, palier 2.
 
-Les commandes sont exécutées réellement, en local, via PowerShell.
-Aucune fenêtre de console n'apparaît.
+Les commandes sont exécutées réellement, en local via PowerShell, ou à
+distance par SSH (menu Session → Nouvelle session). Aucune fenêtre de
+console n'apparaît.
 
 Si une commande semble attendre une saisie (mot de passe, confirmation),
 une boîte de dialogue accessible s'ouvre automatiquement pour y répondre.
@@ -498,8 +508,8 @@ Raccourcis :
   Ctrl+Maj+N          listing amélioré (nom en tête de ligne)
   Ctrl+Maj+R          relire la saisie en cours
   Ctrl+Maj+U          aller automatiquement à la sortie après chaque commande
-  Ctrl+Maj+T          tester l'annonce vocale
   Ctrl+T              nouvelle session
+  Ctrl+Maj+O          nouvelle session SSH
   Ctrl+Tab            session suivante
   Ctrl+1 à Ctrl+9     aller directement à une session
 
@@ -511,7 +521,10 @@ class PanneauSession(wx.Panel):
     """Une session = un onglet = un champ de saisie, un champ de sortie,
     un historique et une liste de blocs qui lui sont propres."""
 
-    def __init__(self, parent, nom: str, voix: Voix, reglages: Reglages):
+    def __init__(
+        self, parent, nom: str, voix: Voix, reglages: Reglages,
+        executeur=None, distant: bool = False,
+    ):
         super().__init__(parent)
         self.nom = nom
         self.voix = voix
@@ -523,9 +536,13 @@ class PanneauSession(wx.Panel):
         # La clé len(historique) correspond à la saisie en cours, qui
         # n'a pas encore été envoyée.
         self._brouillons: dict[int, str] = {}
-        self.executeur = ExecuteurLocal()
+        self.executeur = executeur if executeur is not None else ExecuteurLocal()
+        # Une session distante n'a pas de répertoire local à proposer par
+        # défaut, et « changer de répertoire » y demande un chemin tapé
+        # plutôt qu'un dossier parcouru sur cette machine.
+        self.distant = distant
         self.en_cours = False
-        self.repertoire = str(Path.home())
+        self.repertoire = "" if distant else str(Path.home())
         self._commande_en_cours = ""
         self._debut = 0.0
         self._invite_boite: wx.TextEntryDialog | None = None
@@ -707,6 +724,7 @@ class PanneauSession(wx.Panel):
         self.saisie.SetEditable(False)
         self._commande_en_cours = commande
         self._debut = time.monotonic()
+        self.rafraichir_statut()
 
         def travailler():
             resultat = self.executeur.executer(
@@ -720,11 +738,42 @@ class PanneauSession(wx.Panel):
 
         threading.Thread(target=travailler, daemon=True).start()
 
+    def rafraichir_statut(self) -> None:
+        """Reflète l'état de CETTE session dans la barre de statut et le
+        titre de la fenêtre.
+
+        La barre de statut reste affichée en continu, contrairement au
+        bip et au braille fugace de _signaler_lenteur — mais rien ne la
+        lit au retour d'un Alt+Tab. Le titre, lui, est ce que Windows et
+        NVDA annoncent quand la fenêtre reprend le focus : c'est donc lui
+        qui porte l'information « une commande tourne encore », pas de
+        caractère décoratif, juste du texte.
+        """
+        fenetre = self.GetTopLevelParent()
+        if fenetre.session() is not self:
+            return
+        if self.en_cours:
+            resume = self._commande_en_cours.splitlines()[0].strip()
+            if len(resume) > 60:
+                resume = resume[:60].rstrip() + "..."
+            fenetre.SetStatusText(f"Commande en cours : {resume}")
+            fenetre.SetTitle(f"{self.nom} (commande en cours) — {APP_NOM}")
+        else:
+            fenetre.SetStatusText("Prêt")
+            fenetre.SetTitle(f"{self.nom} — {APP_NOM}")
+
     def _signaler_lenteur(self) -> None:
-        """Appelée depuis le thread de travail via CallAfter."""
+        """Appelée depuis le thread de travail via CallAfter.
+
+        La barre de statut (rafraichir_statut) reste affichée mais n'est
+        pas annoncée automatiquement par NVDA : sans un mot prononcé ici,
+        rien n'indique qu'une commande est toujours en cours au-delà du
+        bip. On ne le fait qu'après ce seuil de lenteur, pas dès le
+        départ, pour ne pas parler par-dessus chaque commande rapide.
+        """
         if not self.en_cours:
             return
-        self.voix.dire(braille="En cours...")
+        self.voix.dire("Commande en cours.", braille="En cours...")
         if self.reglages.sons:
             bip_travail()
 
@@ -761,6 +810,7 @@ class PanneauSession(wx.Panel):
         """Retour dans le thread principal : on peut toucher à l'interface."""
         self.en_cours = False
         self.saisie.SetEditable(True)
+        self.rafraichir_statut()
 
         sortie = resultat.sortie
         if resultat.interrompue:
@@ -946,6 +996,264 @@ class DialogueListeBlocs(wx.Dialog):
 
 
 # --------------------------------------------------------------------------
+# Boîtes de dialogue : profils de connexion SSH
+# --------------------------------------------------------------------------
+
+class DialogueProfilSSH(wx.Dialog):
+    """Création ou modification d'un profil de connexion SSH.
+
+    Le secret (mot de passe ou passphrase) n'est jamais pré-rempli, même
+    en modification d'un profil existant : un champ laissé vide signifie
+    « ne pas changer le secret déjà mémorisé », pas « l'effacer ».
+    """
+
+    def __init__(self, parent, profil: ProfilConnexion | None = None):
+        titre = "Modifier le profil" if profil else "Nouveau profil"
+        super().__init__(parent, title=titre)
+
+        etiquette_nom = wx.StaticText(self, label="&Nom du profil :")
+        self.champ_nom = wx.TextCtrl(self, value=profil.nom if profil else "")
+
+        etiquette_hote = wx.StaticText(self, label="&Hôte :")
+        self.champ_hote = wx.TextCtrl(self, value=profil.hote if profil else "")
+
+        etiquette_port = wx.StaticText(self, label="&Port :")
+        self.champ_port = wx.TextCtrl(self, value=str(profil.port if profil else 22))
+
+        etiquette_utilisateur = wx.StaticText(self, label="&Utilisateur :")
+        self.champ_utilisateur = wx.TextCtrl(
+            self, value=profil.utilisateur if profil else ""
+        )
+
+        self.choix_auth = wx.RadioBox(
+            self, label="Authentification", choices=["Mot de passe", "Clé SSH"],
+        )
+        self.choix_auth.SetSelection(1 if profil and profil.mode_auth == "cle" else 0)
+        self.choix_auth.Bind(wx.EVT_RADIOBOX, self._sur_changement_mode)
+
+        etiquette_cle = wx.StaticText(self, label="Chemin de la &clé privée :")
+        self.champ_cle = wx.TextCtrl(self, value=profil.chemin_cle if profil else "")
+        self.bouton_parcourir = wx.Button(self, label="&Parcourir…")
+        self.bouton_parcourir.Bind(wx.EVT_BUTTON, self._sur_parcourir)
+
+        self.etiquette_secret = wx.StaticText(self, label="")
+        self.champ_secret = wx.TextCtrl(self, style=wx.TE_PASSWORD)
+        self._maj_libelle_secret()
+        aide_secret = wx.StaticText(
+            self,
+            label="(laisser vide pour conserver le secret déjà mémorisé)"
+            if profil else "(facultatif ici : demandé à la connexion si absent)",
+        )
+
+        self._activer_champs_cle()
+
+        boutons = self.CreateButtonSizer(wx.OK | wx.CANCEL)
+        self.Bind(wx.EVT_BUTTON, self._sur_ok, id=wx.ID_OK)
+
+        grille = wx.FlexGridSizer(cols=2, gap=(8, 6))
+        grille.AddGrowableCol(1)
+        for etiquette, champ in (
+            (etiquette_nom, self.champ_nom),
+            (etiquette_hote, self.champ_hote),
+            (etiquette_port, self.champ_port),
+            (etiquette_utilisateur, self.champ_utilisateur),
+        ):
+            grille.Add(etiquette, 0, wx.ALIGN_CENTER_VERTICAL)
+            grille.Add(champ, 1, wx.EXPAND)
+
+        ligne_cle = wx.BoxSizer(wx.HORIZONTAL)
+        ligne_cle.Add(self.champ_cle, 1, wx.EXPAND | wx.RIGHT, 6)
+        ligne_cle.Add(self.bouton_parcourir, 0)
+
+        boite = wx.BoxSizer(wx.VERTICAL)
+        boite.Add(grille, 0, wx.EXPAND | wx.ALL, 10)
+        boite.Add(self.choix_auth, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        boite.Add(etiquette_cle, 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        boite.Add(ligne_cle, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+        boite.Add(self.etiquette_secret, 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        boite.Add(self.champ_secret, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+        boite.Add(aide_secret, 0, wx.LEFT | wx.RIGHT | wx.TOP, 4)
+        boite.Add(boutons, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        self.SetSizerAndFit(boite)
+        self.champ_nom.SetFocus()
+
+    def _sur_changement_mode(self, evt):
+        self._activer_champs_cle()
+        self._maj_libelle_secret()
+
+    def _maj_libelle_secret(self):
+        est_cle = self.choix_auth.GetSelection() == 1
+        self.etiquette_secret.SetLabel(
+            "&Passphrase de la clé :" if est_cle else "&Mot de passe :"
+        )
+
+    def _activer_champs_cle(self):
+        est_cle = self.choix_auth.GetSelection() == 1
+        self.champ_cle.Enable(est_cle)
+        self.bouton_parcourir.Enable(est_cle)
+
+    def _sur_parcourir(self, evt):
+        with wx.FileDialog(
+            self, "Choisir la clé privée", style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
+        ) as boite:
+            if boite.ShowModal() == wx.ID_OK:
+                self.champ_cle.SetValue(boite.GetPath())
+
+    def _sur_ok(self, evt):
+        if not self.champ_nom.GetValue().strip():
+            wx.MessageBox(
+                "Le nom du profil est obligatoire.",
+                "Profil incomplet", wx.OK | wx.ICON_WARNING,
+            )
+            self.champ_nom.SetFocus()
+            return
+        if not self.champ_hote.GetValue().strip():
+            wx.MessageBox(
+                "L'hôte est obligatoire.",
+                "Profil incomplet", wx.OK | wx.ICON_WARNING,
+            )
+            self.champ_hote.SetFocus()
+            return
+        try:
+            port = int(self.champ_port.GetValue().strip())
+            if not (1 <= port <= 65535):
+                raise ValueError
+        except ValueError:
+            wx.MessageBox(
+                "Le port doit être un nombre entre 1 et 65535.",
+                "Profil incomplet", wx.OK | wx.ICON_WARNING,
+            )
+            self.champ_port.SetFocus()
+            return
+        if self.choix_auth.GetSelection() == 1 and not self.champ_cle.GetValue().strip():
+            wx.MessageBox(
+                "Le chemin de la clé est obligatoire en authentification par clé.",
+                "Profil incomplet", wx.OK | wx.ICON_WARNING,
+            )
+            self.champ_cle.SetFocus()
+            return
+        self.EndModal(wx.ID_OK)
+
+    def profil(self) -> ProfilConnexion:
+        return ProfilConnexion(
+            nom=self.champ_nom.GetValue().strip(),
+            hote=self.champ_hote.GetValue().strip(),
+            port=int(self.champ_port.GetValue().strip()),
+            utilisateur=self.champ_utilisateur.GetValue().strip(),
+            mode_auth="cle" if self.choix_auth.GetSelection() == 1 else "mot_de_passe",
+            chemin_cle=self.champ_cle.GetValue().strip(),
+        )
+
+    def secret(self) -> str:
+        return self.champ_secret.GetValue()
+
+
+class DialogueGestionProfils(wx.Dialog):
+    """Créer, modifier ou supprimer des profils de connexion SSH."""
+
+    def __init__(self, parent):
+        super().__init__(
+            parent, title="Profils de connexion SSH",
+            style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
+        )
+        self.profils = charger_profils()
+
+        etiquette = wx.StaticText(self, label="&Profils :")
+        self.liste = wx.ListBox(self, choices=self._libelles())
+
+        bouton_nouveau = wx.Button(self, label="&Nouveau…")
+        bouton_nouveau.Bind(wx.EVT_BUTTON, self._sur_nouveau)
+        bouton_modifier = wx.Button(self, label="&Modifier…")
+        bouton_modifier.Bind(wx.EVT_BUTTON, self._sur_modifier)
+        bouton_supprimer = wx.Button(self, label="&Supprimer")
+        bouton_supprimer.Bind(wx.EVT_BUTTON, self._sur_supprimer)
+        bouton_fermer = wx.Button(self, id=wx.ID_CANCEL, label="Fer&mer")
+
+        boutons = wx.BoxSizer(wx.HORIZONTAL)
+        for bouton in (bouton_nouveau, bouton_modifier, bouton_supprimer, bouton_fermer):
+            boutons.Add(bouton, 0, wx.RIGHT, 6)
+
+        boite = wx.BoxSizer(wx.VERTICAL)
+        boite.Add(etiquette, 0, wx.LEFT | wx.RIGHT | wx.TOP, 8)
+        boite.Add(self.liste, 1, wx.EXPAND | wx.ALL, 8)
+        boite.Add(boutons, 0, wx.ALIGN_RIGHT | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+        self.SetSizer(boite)
+        self.SetSize((520, 320))
+        self.liste.SetFocus()
+
+    def _libelles(self):
+        return [f"{p.nom} — {p.utilisateur}@{p.hote}:{p.port}" for p in self.profils]
+
+    def _selection(self) -> ProfilConnexion | None:
+        index = self.liste.GetSelection()
+        if index == wx.NOT_FOUND:
+            return None
+        return self.profils[index]
+
+    def _rafraichir(self, selectionner: str | None = None):
+        self.liste.Set(self._libelles())
+        if selectionner is not None:
+            for i, p in enumerate(self.profils):
+                if p.nom == selectionner:
+                    self.liste.SetSelection(i)
+                    break
+        enregistrer_profils(self.profils)
+
+    def _sur_nouveau(self, evt):
+        with DialogueProfilSSH(self) as boite:
+            if boite.ShowModal() != wx.ID_OK:
+                return
+            profil = boite.profil()
+            if any(p.nom == profil.nom for p in self.profils):
+                wx.MessageBox(
+                    f"Un profil « {profil.nom} » existe déjà.",
+                    "Nom déjà utilisé", wx.OK | wx.ICON_WARNING,
+                )
+                return
+            secret = boite.secret()
+            self.profils.append(profil)
+            if secret:
+                enregistrer_secret(profil, secret)
+            self._rafraichir(profil.nom)
+
+    def _sur_modifier(self, evt):
+        profil = self._selection()
+        if profil is None:
+            return
+        with DialogueProfilSSH(self, profil) as boite:
+            if boite.ShowModal() != wx.ID_OK:
+                return
+            nouveau = boite.profil()
+            index = self.profils.index(profil)
+            secret = boite.secret()
+            if secret:
+                enregistrer_secret(nouveau, secret)
+            elif nouveau.nom != profil.nom:
+                # Le secret est mémorisé sous l'ancien nom : le faire suivre.
+                ancien_secret = lire_secret(profil)
+                if ancien_secret:
+                    enregistrer_secret(nouveau, ancien_secret)
+                    supprimer_secret(profil)
+            self.profils[index] = nouveau
+            self._rafraichir(nouveau.nom)
+
+    def _sur_supprimer(self, evt):
+        profil = self._selection()
+        if profil is None:
+            return
+        reponse = wx.MessageBox(
+            f"Supprimer le profil « {profil.nom} » ? "
+            "Le secret mémorisé sera aussi supprimé.",
+            "Supprimer le profil", wx.YES_NO | wx.ICON_QUESTION,
+        )
+        if reponse != wx.YES:
+            return
+        supprimer_secret(profil)
+        self.profils.remove(profil)
+        self._rafraichir()
+
+
+# --------------------------------------------------------------------------
 # Fenêtre principale
 # --------------------------------------------------------------------------
 
@@ -1027,6 +1335,7 @@ class Fenetre(wx.Frame):
             panneau = self.carnet.GetPage(index)
             if panneau.en_cours:
                 panneau.executeur.interrompre()
+            panneau.executeur.fermer()
         logging.info("Fermeture de la fenêtre.")
         evt.Skip()
 
@@ -1036,9 +1345,19 @@ class Fenetre(wx.Frame):
         barre = wx.MenuBar()
 
         m_session = wx.Menu()
+
+        m_nouvelle = wx.Menu()
         self.Bind(wx.EVT_MENU,
                   lambda e: self.nouvelle_session(),
-                  m_session.Append(wx.ID_ANY, "&Nouvelle session\tCtrl+T"))
+                  m_nouvelle.Append(wx.ID_ANY, "Session &locale\tCtrl+T"))
+        self.Bind(wx.EVT_MENU,
+                  lambda e: self.nouvelle_session_ssh(),
+                  m_nouvelle.Append(wx.ID_ANY, "Session &SSH…\tCtrl+Shift+O"))
+        m_session.AppendSubMenu(m_nouvelle, "&Nouvelle session")
+
+        self.Bind(wx.EVT_MENU,
+                  lambda e: self.gerer_profils_ssh(),
+                  m_session.Append(wx.ID_ANY, "&Gestion des profils SSH…"))
         self.Bind(wx.EVT_MENU,
                   lambda e: self.fermer_session(),
                   m_session.Append(wx.ID_ANY, "&Fermer la session\tCtrl+W"))
@@ -1125,9 +1444,6 @@ class Fenetre(wx.Frame):
 
         m_aide = wx.Menu()
         self.Bind(wx.EVT_MENU,
-                  lambda e: self.tester_voix(),
-                  m_aide.Append(wx.ID_ANY, "&Tester l'annonce vocale\tCtrl+Shift+T"))
-        self.Bind(wx.EVT_MENU,
                   lambda e: self.ouvrir_journal(),
                   m_aide.Append(wx.ID_ANY, "Ouvrir le &journal"))
         self.Bind(wx.EVT_MENU,
@@ -1161,8 +1477,119 @@ class Fenetre(wx.Frame):
             wx.YES_NO | wx.ICON_QUESTION,
         )
         if reponse == wx.YES:
+            panneau = self.carnet.GetPage(index)
+            if panneau.en_cours:
+                panneau.executeur.interrompre()
+            panneau.executeur.fermer()
             self.carnet.DeletePage(index)
             logging.info("Session fermée : %s", nom)
+
+    # -- SSH -----------------------------------------------------------
+
+    def gerer_profils_ssh(self):
+        with DialogueGestionProfils(self) as boite:
+            boite.ShowModal()
+
+    def _verifier_hote_ssh(self, message: str) -> bool:
+        """Appelée depuis le thread de connexion : bloque jusqu'à la
+        réponse. Un contrôle Win32 natif est lu directement par NVDA."""
+        resultat: dict[str, bool] = {"valeur": False}
+        evenement = threading.Event()
+
+        def ouvrir():
+            reponse = wx.MessageBox(
+                message, "Vérification de la clé d'hôte", wx.YES_NO | wx.ICON_WARNING,
+            )
+            resultat["valeur"] = reponse == wx.YES
+            evenement.set()
+
+        wx.CallAfter(ouvrir)
+        evenement.wait()
+        return resultat["valeur"]
+
+    def nouvelle_session_ssh(self):
+        profils = charger_profils()
+        if not profils:
+            reponse = wx.MessageBox(
+                "Aucun profil de connexion enregistré. En créer un maintenant ?",
+                "Aucun profil", wx.YES_NO | wx.ICON_QUESTION,
+            )
+            if reponse == wx.YES:
+                self.gerer_profils_ssh()
+            return
+
+        choix = [f"{p.nom} — {p.utilisateur}@{p.hote}:{p.port}" for p in profils]
+        with wx.SingleChoiceDialog(
+            self, "Se connecter avec quel profil ?", "Nouvelle session SSH", choix,
+        ) as boite:
+            if boite.ShowModal() != wx.ID_OK:
+                return
+            profil = profils[boite.GetSelection()]
+
+        secret = lire_secret(profil)
+        if secret is None:
+            libelle = (
+                "Passphrase de la clé (laisser vide si aucune) :"
+                if profil.mode_auth == "cle" else "Mot de passe :"
+            )
+            with wx.TextEntryDialog(
+                self, libelle, f"Connexion à {profil.nom}", style=wx.TE_PASSWORD,
+            ) as boite:
+                if boite.ShowModal() != wx.ID_OK:
+                    return
+                secret = boite.GetValue()
+            if secret and wx.MessageBox(
+                "Mémoriser ce secret dans le Gestionnaire d'identifiants "
+                "Windows pour la prochaine fois ?",
+                "Mémoriser le secret", wx.YES_NO | wx.ICON_QUESTION,
+            ) == wx.YES:
+                enregistrer_secret(profil, secret)
+
+        self.SetStatusText(f"Connexion à {profil.nom}…")
+        self.voix.dire(f"Connexion à {profil.nom}.", interrompre=True)
+
+        def connecter():
+            executeur = ExecuteurSSH()
+            try:
+                executeur.connecter(profil, secret, self._verifier_hote_ssh)
+            except Exception as erreur:
+                logging.exception("Connexion SSH échouée à %s", profil.nom)
+                wx.CallAfter(self._echec_connexion_ssh, profil, erreur)
+                return
+            wx.CallAfter(self._connexion_ssh_reussie, profil, executeur)
+
+        threading.Thread(target=connecter, daemon=True).start()
+
+    def _echec_connexion_ssh(self, profil: ProfilConnexion, erreur: Exception):
+        self.SetStatusText("Connexion échouée.")
+        wx.MessageBox(
+            f"Impossible de se connecter à « {profil.nom} » :\n{erreur}",
+            "Connexion échouée", wx.OK | wx.ICON_ERROR,
+        )
+        self.voix.dire("Connexion échouée.", interrompre=True)
+
+    def _connexion_ssh_reussie(self, profil: ProfilConnexion, executeur: ExecuteurSSH):
+        panneau = PanneauSession(
+            self.carnet, profil.nom, self.voix, self.reglages,
+            executeur=executeur, distant=True,
+        )
+        self.carnet.AddPage(panneau, profil.nom, select=True)
+        panneau.saisie.SetFocus()
+        logging.info("Session SSH créée : %s", profil.nom)
+        self.SetStatusText(f"Connecté à {profil.nom}.")
+        self.voix.dire(f"Connecté à {profil.nom}.", interrompre=True)
+
+        def recuperer_repertoire():
+            # En silence, sans passer par panneau.executer() : ça créerait
+            # un bloc « pwd » visible que l'utilisateur n'a pas demandé.
+            # Sans ça, le champ de Ctrl+Maj+D resterait vide tant qu'aucun
+            # changement de répertoire n'a été fait à la main.
+            resultat = executeur.executer("pwd", listing_lisible=False)
+            chemin = resultat.sortie.strip()
+            if resultat.code_retour == 0 and chemin:
+                wx.CallAfter(setattr, panneau, "repertoire", chemin)
+
+        threading.Thread(target=recuperer_repertoire, daemon=True).start()
 
     def session(self) -> PanneauSession | None:
         index = self.carnet.GetSelection()
@@ -1184,10 +1611,16 @@ class Fenetre(wx.Frame):
     def sur_changement_page(self, evt):
         panneau = self.session()
         if panneau is not None:
-            self.SetTitle(f"{panneau.nom} — {APP_NOM}")
             # NVDA annonce l'onglet puis le champ, dont le nom accessible
             # contient déjà la session. On se contente du braille.
             self.voix.dire(braille=f"Session {panneau.nom}")
+            # Le titre et la barre de statut sont partagés entre les
+            # sessions : sans ça, changer d'onglet garderait affiché le
+            # statut (et le titre) de la session précédente. C'est
+            # rafraichir_statut qui pose le titre, pas ce gestionnaire :
+            # il doit rester la seule source pour ne pas écraser un
+            # « commande en cours » par erreur.
+            panneau.rafraichir_statut()
 
             # Le focus ne suit QUE si le changement vient d'ailleurs que
             # de la barre d'onglets. Sinon, parcourir les onglets aux
@@ -1273,18 +1706,29 @@ class Fenetre(wx.Frame):
         panneau = self.session()
         if panneau is None:
             return
-        with wx.DirDialog(
-            self, "Choisissez le répertoire de travail",
-            defaultPath=panneau.repertoire,
-            style=wx.DD_DEFAULT_STYLE | wx.DD_DIR_MUST_EXIST,
-        ) as boite:
-            if boite.ShowModal() == wx.ID_OK:
+        if panneau.distant:
+            # Pas de sélecteur de dossier possible : le système de
+            # fichiers parcouru serait celui de cette machine, pas celui
+            # du serveur distant. On tape donc le chemin directement.
+            with wx.TextEntryDialog(
+                self, "Répertoire distant (chemin sur le serveur) :",
+                "Changer de répertoire", panneau.repertoire,
+            ) as boite:
+                if boite.ShowModal() != wx.ID_OK:
+                    return
+                panneau.repertoire = boite.GetValue().strip()
+        else:
+            with wx.DirDialog(
+                self, "Choisissez le répertoire de travail",
+                defaultPath=panneau.repertoire,
+                style=wx.DD_DEFAULT_STYLE | wx.DD_DIR_MUST_EXIST,
+            ) as boite:
+                if boite.ShowModal() != wx.ID_OK:
+                    return
                 panneau.repertoire = boite.GetPath()
-                self.SetStatusText(f"Répertoire : {panneau.repertoire}")
-                self.voix.dire(
-                    f"Répertoire : {panneau.repertoire}", interrompre=True
-                )
-                logging.info("[%s] répertoire : %s", panneau.nom, panneau.repertoire)
+        self.SetStatusText(f"Répertoire : {panneau.repertoire}")
+        self.voix.dire(f"Répertoire : {panneau.repertoire}", interrompre=True)
+        logging.info("[%s] répertoire : %s", panneau.nom, panneau.repertoire)
 
     def repeter_saisie(self):
         panneau = self.session()
@@ -1336,30 +1780,6 @@ class Fenetre(wx.Frame):
         logging.info("[%s] historique des commandes vidé", panneau.nom)
 
     # -- divers ------------------------------------------------------------
-
-    def tester_voix(self):
-        """Vérifie la chaîne d'annonce sans passer par une commande."""
-        if self.voix.muet:
-            wx.MessageBox(
-                "L'application tourne en mode muet (option --muet).\n"
-                "Relancez-la avec lancer.bat pour activer l'annonce.",
-                "Test de l'annonce", wx.OK | wx.ICON_INFORMATION,
-            )
-            return
-        if not self.voix.disponible:
-            wx.MessageBox(
-                "Le client contrôleur NVDA n'a pas été chargé.\n\n"
-                "Aucun fichier nvdaControllerClient*.dll n'a été trouvé "
-                "sous le dossier du projet.\n\n"
-                f"Le journal en dit plus :\n{self.chemin_journal}",
-                "Test de l'annonce", wx.OK | wx.ICON_WARNING,
-            )
-            return
-        self.voix.dire(
-            "Test réussi. Si vous entendez ce message, l'annonce "
-            "automatique fonctionne."
-        )
-        self.SetStatusText("Message de test envoyé à NVDA")
 
     def ouvrir_journal(self):
         try:
@@ -1437,10 +1857,6 @@ class Fenetre(wx.Frame):
 
         if ctrl and maj and code == ord("H"):
             self.basculer_horodatage()
-            return
-
-        if ctrl and maj and code == ord("T"):
-            self.tester_voix()
             return
 
         if ctrl and code == wx.WXK_TAB:
