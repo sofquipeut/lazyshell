@@ -20,9 +20,9 @@ from __future__ import annotations
 import argparse
 import ctypes
 import logging
-import random
 import sys
 import threading
+import time
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -30,8 +30,10 @@ from pathlib import Path
 
 import wx
 
+from execution import ExecuteurLocal, Resultat
+
 APP_NOM = "Terminal accessible"
-VERSION = "0.1 (palier 0)"
+VERSION = "0.2 (palier 1)"
 
 # Niveaux de verbosité de l'annonce vocale
 VERBOSITE_RESUME = 0
@@ -48,6 +50,7 @@ NOMS_VERBOSITE = {
 SEUIL_LECTURE_INTEGRALE = 10   # en dessous, on lit tout quoi qu'il arrive
 LIGNES_APERCU = 5              # niveau 1
 LIGNES_ERREUR = 15             # sur code de retour non nul
+SEUIL_DUREE_ANNONCEE = 3.0     # en deçà, la durée n'est pas mentionnée
 LONGUEUR_COMMANDE_ENTETE = 60  # au-delà, la commande est tronquée
                                # dans l'en-tête et rappelée en entier
 
@@ -250,6 +253,27 @@ class Voix:
             logging.exception("Échec de l'interruption de la parole.")
 
 
+def bip_travail() -> None:
+    """Signal pour une commande qui dure : deux notes montantes.
+
+    Distinct des bips de fin, qui sont d'une seule note. Assez long pour
+    être perçu : à 40 ms les deux notes se confondaient en un seul clic.
+    """
+    def jouer():
+        try:
+            import winsound
+            # Le silence intercalé est indispensable : deux notes
+            # enchaînées sans interruption sont perçues comme un seul son
+            # qui monte, et non comme deux bips.
+            winsound.Beep(400, 80)
+            time.sleep(0.09)
+            winsound.Beep(600, 80)
+        except Exception:
+            pass
+
+    threading.Thread(target=jouer, daemon=True).start()
+
+
 def bip(succes: bool) -> None:
     """Signal sonore court, joué dans un thread pour ne pas figer l'interface."""
     def jouer():
@@ -280,6 +304,8 @@ class Bloc:
     horodatage: datetime = field(default_factory=datetime.now)
     debut: int = 0   # position de départ dans le champ de sortie
     fin: int = 0
+    duree: float = 0.0
+    interrompue: bool = False
 
     @property
     def nb_lignes(self) -> int:
@@ -307,11 +333,17 @@ class Bloc:
             commande = commande[:LONGUEUR_COMMANDE_ENTETE].rstrip() + "..."
         morceaux.append(commande)
 
-        if self.code_retour != 0:
+        # Un code de retour négatif après interruption n'a aucun sens
+        # pour l'utilisateur : c'est le signal qui a tué le processus.
+        if self.interrompue:
+            morceaux.append("interrompue")
+        elif self.code_retour != 0:
             morceaux.append(f"erreur {self.code_retour}")
 
         n = self.nb_lignes
-        morceaux.append("1 ligne" if n == 1 else f"{n} lignes")
+        morceaux.append(decompte(n))
+        if not self.interrompue and self.duree >= SEUIL_DUREE_ANNONCEE:
+            morceaux.append(f"{self.duree:.0f} s")
         return ", ".join(morceaux)
 
     def rendu(self, avec_heure: bool = False) -> str:
@@ -341,36 +373,58 @@ class Bloc:
         return f"{self.numero}. {heure} — {commande} — {decompte} — {etat}"
 
 
+def decompte(n: int) -> str:
+    """Accord de « ligne » : « 1 ligne » et non « 1 lignes »."""
+    return "1 ligne" if n == 1 else f"{n} lignes"
+
+
+def _pour_la_voix(ligne: str) -> str:
+    """Rend une ligne de sortie prononçable.
+
+    Le marqueur [erreur] est utile à l'écran et en braille, mais lu tel
+    quel il donne « crochet ouvrant erreur crochet fermant ».
+    """
+    if ligne.startswith("[erreur] "):
+        return ligne[len("[erreur] "):]
+    return ligne
+
+
 def composer_annonce(bloc: Bloc, verbosite: int) -> str:
     """Applique les règles adaptatives décidées avec l'utilisateur.
 
     Le statut passe TOUJOURS en premier : on peut ainsi couper la parole
     des qu'on sait que la commande a réussi, sans subir toute la sortie.
     """
-    lignes = bloc.sortie.splitlines()
+    lignes = [_pour_la_voix(l) for l in bloc.sortie.splitlines()]
     nb = len(lignes)
 
+    if bloc.interrompue:
+        return f"Interrompue après {bloc.duree:.0f} secondes."
+
     if bloc.code_retour != 0:
-        tete = f"Erreur, code {bloc.code_retour}, {nb} lignes."
+        tete = f"Erreur, code {bloc.code_retour}, {decompte(nb)}."
         if not lignes:
             return tete
         extrait = lignes[:LIGNES_ERREUR]
         suite = "" if nb <= LIGNES_ERREUR else f" Et {nb - LIGNES_ERREUR} lignes de plus."
         return tete + " " + " ".join(extrait) + suite
 
+    # Sur une commande qui a réussi, le bip a déjà dit « c'est fini, tout
+    # va bien » — instantanément, et sans occuper la parole. Répéter
+    # « Terminé, N lignes » avant chaque sortie ne fait que retarder
+    # l'information utile. On entre donc directement dans le contenu.
     if nb == 0:
         return "Terminé."
 
     if nb <= SEUIL_LECTURE_INTEGRALE or verbosite == VERBOSITE_TOUT:
-        return f"Terminé, {nb} lignes. " + " ".join(lignes)
+        return " ".join(lignes)
 
     if verbosite == VERBOSITE_RESUME:
-        return f"Terminé, {nb} lignes."
+        return decompte(nb) + "."
 
     extrait = lignes[:LIGNES_APERCU]
     return (
-        f"Terminé, {nb} lignes. "
-        + " ".join(extrait)
+        " ".join(extrait)
         + f" Et {nb - LIGNES_APERCU} lignes de plus."
     )
 
@@ -402,6 +456,7 @@ class Reglages:
         self.verbosite = VERBOSITE_RESUME_PLUS
         self.sons = True
         self.afficher_horodatage = False
+        self.listing_lisible = True
 
 
 # --------------------------------------------------------------------------
@@ -409,15 +464,15 @@ class Reglages:
 # --------------------------------------------------------------------------
 
 MESSAGE_ACCUEIL = """\
-Terminal accessible, palier 0.
+Terminal accessible, palier 1.
 
-L'exécution des commandes n'est pas encore branchée : taper une commande
-et valider par Entrée créé un bloc de démonstration. Le but est de valider
-la navigation, la copie et l'annonce vocale.
+Les commandes sont exécutées réellement, en local, via PowerShell.
+Aucune fenêtre de console n'apparaît.
 
 Raccourcis :
   Entrée              envoyer la commande
   Maj+Entrée          saut de ligne dans la saisie (commande multiligne)
+  Ctrl+Pause          interrompre la commande en cours
   F6                  basculer entre saisie et sortie
   Échap               revenir au champ de saisie
   Flèche haut / bas   historique des commandes, quand le curseur est
@@ -429,10 +484,13 @@ Raccourcis :
   Ctrl+B              liste des blocs
   Ctrl+Maj+V          changer le niveau de verbosité vocale
   Ctrl+Maj+H          afficher ou masquer l'horodatage des blocs
+  Ctrl+Maj+D          changer de répertoire courant
+  Ctrl+Maj+N          listing amélioré (nom en tête de ligne)
+  Ctrl+Maj+R          relire la saisie en cours
   Ctrl+Maj+T          tester l'annonce vocale
   Ctrl+T              nouvelle session
   Ctrl+Tab            session suivante
-  Ctrl+1 a Ctrl+9     aller directement a une session
+  Ctrl+1 à Ctrl+9     aller directement à une session
 
 Tout est également accessible depuis la barre de menus.
 """
@@ -450,6 +508,15 @@ class PanneauSession(wx.Panel):
         self.blocs: list[Bloc] = []
         self.historique: list[str] = []
         self.index_historique = 0
+        # Textes mis de côté pendant la navigation dans l'historique.
+        # La clé len(historique) correspond à la saisie en cours, qui
+        # n'a pas encore été envoyée.
+        self._brouillons: dict[int, str] = {}
+        self.executeur = ExecuteurLocal()
+        self.en_cours = False
+        self.repertoire = str(Path.home())
+        self._commande_en_cours = ""
+        self._debut = 0.0
 
         police = wx.Font(wx.FontInfo(11).Family(wx.FONTFAMILY_TELETYPE))
 
@@ -483,6 +550,32 @@ class PanneauSession(wx.Panel):
         self.saisie.Bind(wx.EVT_KEY_DOWN, self.sur_touche_saisie)
         self.sortie.Bind(wx.EVT_CHAR, self.sur_frappe_dans_sortie)
 
+        # Mémorise le dernier champ actif, pour le restaurer au retour
+        # d'un Alt+Tab : sans cela le focus revient sur la fenêtre
+        # elle-même et NVDA n'annonce plus rien d'exploitable.
+        self._dernier_focus = self.saisie
+        for champ in (self.saisie, self.sortie):
+            champ.Bind(
+                wx.EVT_SET_FOCUS,
+                lambda evt, c=champ: self._noter_focus(evt, c),
+            )
+
+    def _noter_focus(self, evt, champ):
+        self._dernier_focus = champ
+        evt.Skip()
+
+    def restaurer_focus(self):
+        """Redonne le focus au dernier champ actif de cette session."""
+        cible = self._dernier_focus or self.saisie
+        try:
+            if cible and not cible.IsBeingDeleted():
+                cible.SetFocus()
+                return
+        except RuntimeError:
+            pass                      # contrôle détruit entre-temps
+        if self.saisie:
+            self.saisie.SetFocus()
+
     # -- saisie ------------------------------------------------------------
 
     def envoyer(self) -> None:
@@ -492,6 +585,7 @@ class PanneauSession(wx.Panel):
         self.saisie.SetValue("")
         self.historique.append(commande)
         self.index_historique = len(self.historique)
+        self._brouillons.clear()
         self.executer(commande)
 
     def _ligne_logique(self) -> tuple[int, int]:
@@ -509,16 +603,42 @@ class PanneauSession(wx.Panel):
         return texte[:position].count("\n"), texte.count("\n")
 
     def _rappeler_historique(self, delta: int) -> None:
+        """Navigue dans l'historique sans jamais perdre le texte courant.
+
+        Avant de changer de position, le contenu du champ est mis de côté
+        à sa position actuelle. Une commande en cours de frappe est donc
+        retrouvée intacte en redescendant, et une modification apportée à
+        une commande rappelée survit à un aller-retour.
+        """
         if not self.historique:
             return
-        self.index_historique = max(
-            0, min(len(self.historique), self.index_historique + delta)
-        )
-        if self.index_historique == len(self.historique):
-            self.saisie.SetValue("")
-        else:
-            self.saisie.SetValue(self.historique[self.index_historique])
+        cible = self.index_historique + delta
+        if cible < 0:
+            self.voix.dire("Début de l'historique.", interrompre=True)
+            return
+        if cible > len(self.historique):
+            return
+
+        self._brouillons[self.index_historique] = self.saisie.GetValue()
+        self.index_historique = cible
+
+        texte = self._brouillons.get(cible)
+        if texte is None:
+            texte = "" if cible == len(self.historique) else self.historique[cible]
+        self.saisie.SetValue(texte)
         self.saisie.SetInsertionPointEnd()
+
+        # SetValue ne déclenche aucune annonce : sans cela, on ne sait pas
+        # ce qui vient d'être rappelé.
+        if cible == len(self.historique):
+            self.voix.dire(
+                texte if texte else "Saisie vide.",
+                braille=texte or "(vide)",
+                interrompre=True,
+            )
+        else:
+            rang = len(self.historique) - cible
+            self.voix.dire(texte, braille=f"{rang}: {texte}", interrompre=True)
 
     def sur_touche_saisie(self, evt):
         code = evt.GetKeyCode()
@@ -549,6 +669,18 @@ class PanneauSession(wx.Panel):
 
         evt.Skip()
 
+    def repeter_saisie(self) -> None:
+        """Relit le contenu du champ de saisie, sans rien déplacer.
+
+        Les flèches haut et bas servant à l'historique, il n'y avait plus
+        moyen de se faire relire une commande en cours de composition.
+        """
+        texte = self.saisie.GetValue()
+        if not texte.strip():
+            self.voix.dire("Saisie vide.", braille="(vide)", interrompre=True)
+            return
+        self.voix.dire(texte, braille=texte, interrompre=True)
+
     def sur_frappe_dans_sortie(self, evt):
         """Une frappe dans le champ de sortie bascule vers la saisie.
 
@@ -572,34 +704,64 @@ class PanneauSession(wx.Panel):
     # -- exécution (factice a ce palier) -----------------------------------
 
     def executer(self, commande: str) -> None:
-        """Sera remplacé au palier 1 par l'exécution réelle. La signature et
-        le point d'arrivée (ajouter_bloc) ne changeront pas."""
-        logging.info("[%s] commande simulée : %s", self.nom, commande)
+        """Lance la commande dans un thread et rend la main aussitôt.
 
-        if commande in ("erreur", "échec", "fail"):
-            sortie = (
-                "bash: commande introuvable\n"
-                "Vérifiez l'orthographe ou le chemin d'accès."
+        Rien d'autre ne doit se produire ici : toute attente dans le
+        thread principal figerait l'interface, ce qui pour un utilisateur
+        de lecteur d'écran équivaut à une application morte.
+        """
+        if self.en_cours:
+            self.voix.dire(
+                "Une commande est déjà en cours. Ctrl+Pause pour l'interrompre.",
+                interrompre=True,
             )
-            code = 127
-        elif commande in ("long", "beaucoup"):
-            sortie = "\n".join(
-                f"ligne {i} de sortie simulée, valeur {random.randint(100, 999)}"
-                for i in range(1, 41)
-            )
-            code = 0
-        elif commande in ("vide", "rien"):
-            sortie = ""
-            code = 0
-        else:
-            sortie = (
-                f"Sortie simulée pour : {commande}\n"
-                "L'exécution réelle arrive au palier 1.\n"
-                "Essayez aussi les mots : erreur, long, vide."
-            )
-            code = 0
+            return
 
-        self.ajouter_bloc(commande, sortie, code)
+        self.en_cours = True
+        self.saisie.SetEditable(False)
+        self._commande_en_cours = commande
+        self._debut = time.monotonic()
+
+        def travailler():
+            resultat = self.executeur.executer(
+                commande,
+                repertoire=self.repertoire,
+                sur_lenteur=lambda: wx.CallAfter(self._signaler_lenteur),
+                listing_lisible=self.reglages.listing_lisible,
+            )
+            wx.CallAfter(self._commande_terminee, commande, resultat)
+
+        threading.Thread(target=travailler, daemon=True).start()
+
+    def _signaler_lenteur(self) -> None:
+        """Appelée depuis le thread de travail via CallAfter."""
+        if not self.en_cours:
+            return
+        self.voix.dire(braille="En cours...")
+        if self.reglages.sons:
+            bip_travail()
+
+    def _commande_terminee(self, commande: str, resultat: Resultat) -> None:
+        """Retour dans le thread principal : on peut toucher à l'interface."""
+        self.en_cours = False
+        self.saisie.SetEditable(True)
+
+        sortie = resultat.sortie
+        if resultat.interrompue:
+            sortie = (sortie + "\n" if sortie else "") + "[Commande interrompue.]"
+
+        # durée et interrompue sont posés AVANT ajouter_bloc : l'en-tête
+        # et l'annonce s'en servent au moment de la création du bloc.
+        self._duree = resultat.duree
+        self._interrompue = resultat.interrompue
+        self.ajouter_bloc(commande, sortie, resultat.code_retour)
+
+    def interrompre(self) -> None:
+        if not self.en_cours:
+            self.voix.dire("Aucune commande en cours.", interrompre=True)
+            return
+        self.voix.dire("Interruption demandée.", interrompre=True)
+        threading.Thread(target=self.executeur.interrompre, daemon=True).start()
 
     # -- blocs -------------------------------------------------------------
 
@@ -610,7 +772,10 @@ class PanneauSession(wx.Panel):
             sortie=sortie,
             code_retour=code_retour,
             session=self.nom,
+            duree=getattr(self, "_duree", 0.0),
+            interrompue=getattr(self, "_interrompue", False),
         )
+        self._duree, self._interrompue = 0.0, False
         bloc.debut = self.sortie.GetLastPosition()
         self.sortie.AppendText(
             "\n" + bloc.rendu(self.reglages.afficher_horodatage)
@@ -626,13 +791,22 @@ class PanneauSession(wx.Panel):
         # Le bip part en premier : il est instantane, la synthèse vocale non.
         if self.reglages.sons:
             bip(code_retour == 0)
-        statut = "ok" if code_retour == 0 else f"erreur {code_retour}"
+        if bloc.interrompue:
+            statut = "interrompue"
+        elif code_retour == 0:
+            statut = "ok"
+        else:
+            statut = f"erreur {code_retour}"
         self.voix.dire(
             composer_annonce(bloc, self.reglages.verbosite),
-            braille=f"Bloc {bloc.numero}, {statut}, {bloc.nb_lignes} lignes",
+            braille=f"Bloc {bloc.numero}, {statut}, {decompte(bloc.nb_lignes)}",
             interrompre=True,
         )
         return bloc
+
+    @property
+    def commande_en_cours(self) -> str:
+        return self._commande_en_cours if self.en_cours else ""
 
     def redessiner(self) -> None:
         """Reconstruit le champ de sortie à partir des blocs.
@@ -697,8 +871,72 @@ class Fenetre(wx.Frame):
         self.Bind(wx.EVT_CHAR_HOOK, self.sur_touche_globale)
         self.carnet.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self.sur_changement_page)
 
+        self.Bind(wx.EVT_CLOSE, self.sur_fermeture)
+        self.Bind(wx.EVT_ACTIVATE, self.sur_activation)
+        # Second filet : si le focus atterrit sur le cadre lui-même
+        # plutôt que sur un contrôle, on le redirige aussitôt.
+        self.Bind(wx.EVT_SET_FOCUS, self.sur_focus_cadre)
+
         self.nouvelle_session("Local")
         self.Centre()
+
+    def sur_focus_cadre(self, evt):
+        wx.CallAfter(self.rendre_focus_au_champ)
+        evt.Skip()
+
+    def sur_activation(self, evt):
+        """Au retour d'un Alt+Tab, redonne le focus au dernier champ actif.
+
+        Sans cela le focus atterrit sur la fenêtre elle-même : NVDA
+        annonce le titre et rien d'autre, et on ne sait plus où l'on est.
+        Le CallAfter est nécessaire, car Windows repositionne encore le
+        focus après cet événement.
+        """
+        if evt.GetActive():
+            # CallAfter ne suffit pas : Windows repositionne encore le
+            # focus après cet événement, et notre appel est écrasé. Un
+            # court délai laisse le système finir avant qu'on intervienne.
+            wx.CallLater(80, self.rendre_focus_au_champ)
+        evt.Skip()
+
+    def rendre_focus_au_champ(self):
+        """Pose le focus sur le dernier champ actif de la session courante."""
+        if not self:                 # fenêtre détruite entre-temps
+            return
+        panneau = self.session()
+        if panneau is None:
+            return
+        actuel = wx.Window.FindFocus()
+        # Si le focus est déjà sur un contrôle utile, ne rien forcer :
+        # l'utilisateur peut être volontairement dans la barre d'onglets.
+        if actuel in (panneau.saisie, panneau.sortie, self.carnet):
+            return
+        panneau.restaurer_focus()
+
+    def sur_fermeture(self, evt):
+        """Une commande en cours doit être tuée : sinon le processus
+        survivrait à la fenêtre, invisible et sans moyen de l'arrêter."""
+        occupees = [
+            self.carnet.GetPage(i).nom
+            for i in range(self.carnet.GetPageCount())
+            if self.carnet.GetPage(i).en_cours
+        ]
+        if occupees and evt.CanVeto():
+            reponse = wx.MessageBox(
+                "Une commande est en cours dans : "
+                + ", ".join(occupees)
+                + ".\n\nQuitter et l'interrompre ?",
+                "Commande en cours", wx.YES_NO | wx.ICON_QUESTION,
+            )
+            if reponse != wx.YES:
+                evt.Veto()
+                return
+        for index in range(self.carnet.GetPageCount()):
+            panneau = self.carnet.GetPage(index)
+            if panneau.en_cours:
+                panneau.executeur.interrompre()
+        logging.info("Fermeture de la fenêtre.")
+        evt.Skip()
 
     # -- construction ------------------------------------------------------
 
@@ -712,6 +950,13 @@ class Fenetre(wx.Frame):
         self.Bind(wx.EVT_MENU,
                   lambda e: self.fermer_session(),
                   m_session.Append(wx.ID_ANY, "&Fermer la session\tCtrl+W"))
+        m_session.AppendSeparator()
+        self.Bind(wx.EVT_MENU,
+                  lambda e: self.interrompre_commande(),
+                  m_session.Append(wx.ID_ANY, "&Interrompre la commande\tCtrl+Pause"))
+        self.Bind(wx.EVT_MENU,
+                  lambda e: self.changer_repertoire(),
+                  m_session.Append(wx.ID_ANY, "Changer de &répertoire\tCtrl+Shift+D"))
         m_session.AppendSeparator()
         self.Bind(wx.EVT_MENU,
                   lambda e: self.Close(),
@@ -746,8 +991,20 @@ class Fenetre(wx.Frame):
                   lambda e: self.basculer_champ(),
                   m_affichage.Append(wx.ID_ANY, "&Basculer saisie / sortie\tF6"))
         self.Bind(wx.EVT_MENU,
+                  lambda e: self.repeter_saisie(),
+                  m_affichage.Append(wx.ID_ANY, "&Relire la saisie\tCtrl+Shift+R"))
+        self.Bind(wx.EVT_MENU,
                   lambda e: self.changer_verbosite(),
                   m_affichage.Append(wx.ID_ANY, "Niveau de &verbosité\tCtrl+Shift+V"))
+        self.item_listing = m_affichage.Append(
+            wx.ID_ANY, "Listing a&mélioré\tCtrl+Shift+N",
+            "Place le nom du fichier en tête de ligne dans dir et ls",
+            wx.ITEM_CHECK,
+        )
+        self.item_listing.Check(self.reglages.listing_lisible)
+        self.Bind(wx.EVT_MENU,
+                  lambda e: self.basculer_listing(),
+                  self.item_listing)
         self.item_horodatage = m_affichage.Append(
             wx.ID_ANY, "Afficher l'&horodatage des blocs\tCtrl+Shift+H",
             "Ajoute l'heure dans la ligne d'en-tête de chaque bloc",
@@ -874,7 +1131,7 @@ class Fenetre(wx.Frame):
         texte = bloc.texte_complet() if complet else bloc.sortie
         if copier_presse_papiers(texte):
             quoi = "Bloc" if complet else "Sortie"
-            self.voix.dire(f"{quoi} {bloc.numero} copié, {bloc.nb_lignes} lignes.",
+            self.voix.dire(f"{quoi} {bloc.numero} copié, {decompte(bloc.nb_lignes)}.",
                            interrompre=True)
 
     def copier_dernier_bloc(self):
@@ -884,7 +1141,7 @@ class Fenetre(wx.Frame):
             return
         bloc = panneau.blocs[-1]
         if copier_presse_papiers(bloc.texte_complet()):
-            self.voix.dire(f"Dernier bloc copié, {bloc.nb_lignes} lignes.",
+            self.voix.dire(f"Dernier bloc copié, {decompte(bloc.nb_lignes)}.",
                            interrompre=True)
 
     def lister_blocs(self):
@@ -906,6 +1163,41 @@ class Fenetre(wx.Frame):
         self.SetStatusText(f"Verbosité : {nom}")
         self.voix.dire(f"Verbosité : {nom}.", interrompre=True)
         logging.info("Verbosité changée : %s", nom)
+
+    def interrompre_commande(self):
+        panneau = self.session()
+        if panneau is not None:
+            panneau.interrompre()
+
+    def changer_repertoire(self):
+        panneau = self.session()
+        if panneau is None:
+            return
+        with wx.DirDialog(
+            self, "Choisissez le répertoire de travail",
+            defaultPath=panneau.repertoire,
+            style=wx.DD_DEFAULT_STYLE | wx.DD_DIR_MUST_EXIST,
+        ) as boite:
+            if boite.ShowModal() == wx.ID_OK:
+                panneau.repertoire = boite.GetPath()
+                self.SetStatusText(f"Répertoire : {panneau.repertoire}")
+                self.voix.dire(
+                    f"Répertoire : {panneau.repertoire}", interrompre=True
+                )
+                logging.info("[%s] répertoire : %s", panneau.nom, panneau.repertoire)
+
+    def repeter_saisie(self):
+        panneau = self.session()
+        if panneau is not None:
+            panneau.repeter_saisie()
+
+    def basculer_listing(self):
+        self.reglages.listing_lisible = not self.reglages.listing_lisible
+        self.item_listing.Check(self.reglages.listing_lisible)
+        etat = "activé" if self.reglages.listing_lisible else "désactivé"
+        self.SetStatusText(f"Listing amélioré {etat}")
+        self.voix.dire(f"Listing amélioré {etat}.", interrompre=True)
+        logging.info("Listing amélioré %s", etat)
 
     def basculer_horodatage(self):
         self.reglages.afficher_horodatage = not self.reglages.afficher_horodatage
@@ -990,6 +1282,26 @@ class Fenetre(wx.Frame):
             panneau = self.session()
             if panneau is not None:
                 panneau.saisie.SetFocus()
+            return
+
+        if ctrl and code in (wx.WXK_PAUSE, wx.WXK_CANCEL):
+            panneau = self.session()
+            if panneau is not None:
+                panneau.interrompre()
+            return
+
+        if ctrl and maj and code == ord("D"):
+            self.changer_repertoire()
+            return
+
+        if ctrl and maj and code == ord("R"):
+            panneau = self.session()
+            if panneau is not None:
+                panneau.repeter_saisie()
+            return
+
+        if ctrl and maj and code == ord("N"):
+            self.basculer_listing()
             return
 
         if ctrl and maj and code == ord("H"):
