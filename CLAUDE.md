@@ -50,6 +50,20 @@ confort ici : c'est le cahier des charges.**
   l'erreur en entier quel que soit le niveau réglé.
 - Pas de mot de passe en clair dans un fichier de configuration. Clés SSH,
   ou Gestionnaire d'identifiants Windows via `keyring`.
+- Clé d'hôte SSH mémorisée à la première connexion (principe du
+  known_hosts d'OpenSSH), dans un fichier propre à l'application
+  (`hotes_ssh_connus`), jamais celui de l'utilisateur. Toute clé qui
+  change ensuite doit être confirmée explicitement par une boîte de
+  dialogue : jamais d'acceptation automatique et silencieuse.
+- SSH sans pseudo-terminal (`get_pty=False`) : stdout et stderr restent
+  séparés, comme en local. Conséquence acceptée : une invite purement
+  interactive côté shell distant (ex. `read -p` de bash, qui n'écrit rien
+  du tout hors mode interactif) n'écrit rien de détectable ; seule
+  l'interruption manuelle (Ctrl+Maj+K) s'applique alors. Même famille de
+  limite que `Read-Host` bloqué en local par `-NonInteractive`.
+- Interruption d'une commande par **Ctrl+Maj+K**, raccourci principal
+  (Ctrl+Pause existe toujours en secours mais n'est pas mis en avant :
+  absente ou remappée sur certains claviers).
 
 ## Comment lancer et tester
 
@@ -69,15 +83,25 @@ L'environnement Python est dans `venv`. Utiliser
   copie, couche vocale, journal. L'exécution des commandes est simulée dans
   `PanneauSession.executer()`.
 - **Palier 1, fait** — exécution locale réelle en tâche de fond (PowerShell
-  via `execution.ExecuteurLocal`), interruption par Ctrl+Pause, historique,
-  détection des invites de saisie (fragment de ligne sans retour à la ligne,
-  silencieux plus de 1,5 s) ouvrant une boîte de dialogue accessible.
+  via `execution.ExecuteurLocal`), interruption, historique, détection des
+  invites de saisie (fragment de ligne sans retour à la ligne, silencieux
+  plus de 1,5 s) ouvrant une boîte de dialogue accessible.
 - **Palier 2, fait** — SSH par Paramiko (`ssh.ExecuteurSSH`, même contrat
   que `ExecuteurLocal`), profils de connexion (`profils_ssh.json`, non
   secrets), identifiants dans le Gestionnaire d'identifiants Windows via
-  `keyring`, mémorisation de la clé d'hôte à la première connexion
-  (`hotes_ssh_connus`, jamais le known_hosts de l'utilisateur).
-- **Palier 3, à faire** — exécutable final.
+  `keyring`, mémorisation de la clé d'hôte à la première connexion.
+  Détection d'invite réutilisée sur le canal distant ; listing `ls`
+  amélioré sur le même principe que `dir`/`ls` en local (nom en tête,
+  seulement pour un `ls` nu, jamais réécrit s'il y a des arguments) ;
+  répertoire courant récupéré en silence (`pwd`) juste après connexion ;
+  statut « commande en cours » annoncé vocalement et porté dans le titre
+  de la fenêtre (utile au retour d'un Alt+Tab, la barre de statut seule
+  n'étant pas lue automatiquement par NVDA).
+- **Palier 3, à faire** — exécutable final. L'outillage existe déjà
+  (`compiler.bat`, PyInstaller, embarque `nvdaControllerClient*.dll` s'il
+  est présent), mais n'a pas été revérifié depuis l'arrivée des
+  dépendances SSH (`paramiko`, `keyring`, `cryptography`) : à tester en
+  `--onefile` avant de considérer ce palier fait.
 
 ## Consignes de travail
 
