@@ -1,18 +1,18 @@
 @echo off
 cd /d "%~dp0"
-title Compilation - Terminal accessible
+title Compilation - LazyShell
 
 if not exist "venv\Scripts\python.exe" goto pas_installe
 
-set OPTION_DLL=
-if exist "nvdaControllerClient64.dll" set OPTION_DLL=--add-binary "nvdaControllerClient64.dll;."
-if exist "nvdaControllerClient.dll"   set OPTION_DLL=--add-binary "nvdaControllerClient.dll;."
+set NOM_DLL=
+if exist "nvdaControllerClient64.dll" set NOM_DLL=nvdaControllerClient64.dll
+if exist "nvdaControllerClient.dll"   set NOM_DLL=nvdaControllerClient.dll
 
 echo ============================================
 echo   Production de l'executable
 echo ============================================
 echo.
-if "%OPTION_DLL%"=="" (
+if "%NOM_DLL%"=="" (
     echo ATTENTION : aucun client controleur NVDA trouve dans ce dossier.
     echo L'executable fonctionnera mais sans annonce automatique.
     echo.
@@ -22,22 +22,31 @@ echo.
 
 "venv\Scripts\python.exe" -m PyInstaller ^
   --noconfirm ^
-  --onefile ^
   --windowed ^
   --clean ^
-  --name "TerminalAccessible" ^
-  %OPTION_DLL% ^
-  terminal_accessible.py
+  --name "LazyShell" ^
+  lazyshell.py
 
 if errorlevel 1 goto echec
+
+rem Mode dossier (--onedir, implicite en l'absence de --onefile depuis
+rem PyInstaller 6) : l'exe et les fichiers de donnees (settings.json,
+rem ssh_profiles.json, known_hosts, commands.json, lazyshell.log) vivent
+rem directement a cote les uns des autres dans dist\LazyShell, les
+rem bibliotheques Python dans le sous-dossier _internal. La DLL doit
+rem etre a cote de l'exe, jamais dans _internal : l'appli ne cherche que
+rem dans le dossier de l'exe (voir Voix._candidats).
+if not "%NOM_DLL%"=="" copy /y "%NOM_DLL%" "dist\LazyShell\%NOM_DLL%" >nul
 
 echo.
 echo ============================================
 echo   Compilation terminee
 echo ============================================
 echo.
-echo L'executable se trouve dans le sous-dossier dist,
-echo sous le nom TerminalAccessible.exe
+echo Le dossier dist\LazyShell contient l'application complete.
+echo C'est ce dossier entier qu'il faut distribuer ou copier ailleurs,
+echo pas seulement LazyShell.exe : il a besoin du sous-dossier _internal
+echo a cote de lui pour fonctionner.
 echo.
 echo Rappel : un executable non signe est frequemment mis en
 echo quarantaine par Windows Defender. Si le fichier disparait,

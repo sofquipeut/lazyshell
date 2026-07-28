@@ -1,6 +1,6 @@
 @echo off
 cd /d "%~dp0"
-title Installation des outils - Terminal accessible
+title Installation des outils - LazyShell
 
 echo ============================================
 echo   Installation des outils de developpement

@@ -94,6 +94,19 @@ def reecrire_listing(commande: str) -> str | None:
     return f"{base} | Format-Table -AutoSize $_TA_COLONNES"
 
 
+# Séquences d'échappement ANSI (couleurs, déplacement du curseur...).
+# Certains outils les émettent même sans terminal en face (alias
+# `ls --color=always`, variables comme CLICOLOR_FORCE) : sans filtre,
+# les codes bruts s'afficheraient tels quels, illisibles en vocal comme
+# en braille. Partagé avec ssh.py, d'où le format d'échappement générique
+# plutôt qu'une liste des seuls codes couleur.
+MOTIF_ANSI = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+def nettoyer_ansi(texte: str) -> str:
+    return MOTIF_ANSI.sub("", texte)
+
+
 # Après une interruption, délai au-delà duquel on cesse d'attendre les
 # flux : un processus petit-enfant ayant survécu les garderait ouverts.
 DELAI_ABANDON_LECTURE = 3.0
@@ -250,7 +263,7 @@ class ExecuteurLocal:
                             texte = "".join(info["tampon"])
                             info["tampon"].clear()
                             info["signale"] = False
-                        fil.put((texte, est_erreur))
+                        fil.put((nettoyer_ansi(texte), est_erreur))
                     else:
                         with verrou_fragments:
                             info["tampon"].append(caractere)
@@ -263,7 +276,7 @@ class ExecuteurLocal:
                     texte_restant = "".join(info["tampon"])
                     info["tampon"].clear()
                 if texte_restant:
-                    fil.put((texte_restant, est_erreur))
+                    fil.put((nettoyer_ansi(texte_restant), est_erreur))
                 fil.put(None)
 
         lecteurs = [
@@ -315,7 +328,7 @@ class ExecuteurLocal:
                                 and time.monotonic() - info["temps"] > SEUIL_INVITE
                             ):
                                 info["signale"] = True
-                                candidat = "".join(info["tampon"])
+                                candidat = nettoyer_ansi("".join(info["tampon"]))
                                 break
                     if candidat is not None:
                         reponse = sur_invite(candidat)

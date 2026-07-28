@@ -1,0 +1,27 @@
+# Normalisation des fins de ligne.
+#
+# Sans ce fichier, Git convertit les fins de ligne selon le réglage
+# core.autocrlf de chaque machine, d'où l'avertissement « LF will be
+# replaced by CRLF ». Rien de cassé, mais le contenu du dépôt dépend
+# alors de qui l'enregistre, ce qui produit des différentiels parasites.
+
+# Par défaut : Git détecte le texte et stocke en LF dans le dépôt.
+* text=auto
+
+# Fichiers de code : LF partout, y compris dans la copie de travail.
+# Python, PowerShell et les éditeurs modernes s'en accommodent.
+*.py    text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+
+# Scripts Windows : CRLF obligatoire. Un .bat en LF peut casser les
+# étiquettes goto sur certaines versions de cmd.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# Binaires : aucune conversion.
+*.dll   binary
+*.exe   binary
+*.png   binary
+*.ico   binary

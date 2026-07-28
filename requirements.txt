@@ -10,3 +10,7 @@ keyring>=25.0
 
 # Production de l'executable final (palier 3).
 pyinstaller>=6.3
+
+# Canal d'annonce JAWS (COM), en parallele du client controleur NVDA.
+# Comme la DLL NVDA, degradation silencieuse si JAWS n'est pas installe.
+pywin32>=306

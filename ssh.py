@@ -36,20 +36,29 @@ from typing import Callable
 import keyring
 import paramiko
 
-from execution import MAX_LIGNES, SEUIL_COMMANDE_LONGUE, SEUIL_INVITE, Resultat
+from execution import (
+    MAX_LIGNES,
+    SEUIL_COMMANDE_LONGUE,
+    SEUIL_INVITE,
+    Resultat,
+    nettoyer_ansi,
+)
 
 # Nom de service utilisé dans le Gestionnaire d'identifiants Windows.
 # Aucun mot de passe ni passphrase n'est jamais écrit en clair dans un
 # fichier : seuls les champs non secrets d'un profil (hôte, port,
 # utilisateur, mode d'authentification, chemin de clé) sont dans
-# profils_ssh.json.
-SERVICE_KEYRING = "TerminalAccessible-SSH"
+# ssh_profiles.json.
+SERVICE_KEYRING = "LazyShell-SSH"
+
+# Intervalle, en secondes, entre deux paquets de maintien de connexion.
+INTERVALLE_KEEPALIVE = 30
 
 
 def _dossier_base() -> Path:
     """Dossier de travail : à côté de l'exe si compilé, du script sinon.
 
-    Recopié depuis terminal_accessible.dossier_base() : ce module ne doit
+    Recopié depuis lazyshell.dossier_base() : ce module ne doit
     rien importer de wxPython ni de l'application pour rester testable
     seul, et cette fonction ne fait que quatre lignes.
     """
@@ -59,11 +68,11 @@ def _dossier_base() -> Path:
 
 
 def _chemin_profils() -> Path:
-    return _dossier_base() / "profils_ssh.json"
+    return _dossier_base() / "ssh_profiles.json"
 
 
 def _chemin_cles_connues() -> Path:
-    return _dossier_base() / "hotes_ssh_connus"
+    return _dossier_base() / "known_hosts"
 
 
 # --------------------------------------------------------------------------
@@ -278,6 +287,15 @@ class ExecuteurSSH:
             logging.warning("Clé d'hôte changée et acceptée pour %s", profil.hote)
             client.connect(**parametres)
 
+        # Sans ça, une session inactive un moment peut être coupée en
+        # silence par le serveur ou un pare-feu/NAT intermédiaire : la
+        # commande suivante échouerait alors avec une erreur qui ne dit
+        # pas pourquoi. Un paquet toutes les INTERVALLE_KEEPALIVE secondes
+        # suffit à garder la connexion vivante côté deux extrémités.
+        transport = client.get_transport()
+        if transport is not None:
+            transport.set_keepalive(INTERVALLE_KEEPALIVE)
+
         with self._verrou:
             self._client = client
         logging.info(
@@ -290,6 +308,48 @@ class ExecuteurSSH:
         if client is not None:
             client.close()
             logging.info("Connexion SSH fermée.")
+
+    # -- transfert de fichiers (SFTP) --------------------------------------
+
+    def envoyer_fichier(
+        self,
+        chemin_local: str,
+        chemin_distant: str,
+        sur_progression: Callable[[int, int], None] | None = None,
+    ) -> None:
+        """Copie un fichier local vers le serveur. Bloque : à appeler hors
+        thread principal. Les exceptions (fichier local introuvable,
+        chemin distant invalide, droits refusés...) remontent telles
+        quelles, à charge de l'appelant de les traduire."""
+        with self._verrou:
+            client = self._client
+        if client is None:
+            raise RuntimeError("Aucune connexion SSH active.")
+        sftp = client.open_sftp()
+        try:
+            sftp.put(chemin_local, chemin_distant, callback=sur_progression)
+            logging.info("Fichier envoyé : %s -> %s", chemin_local, chemin_distant)
+        finally:
+            sftp.close()
+
+    def recuperer_fichier(
+        self,
+        chemin_distant: str,
+        chemin_local: str,
+        sur_progression: Callable[[int, int], None] | None = None,
+    ) -> None:
+        """Copie un fichier distant vers cette machine. Mêmes règles que
+        envoyer_fichier."""
+        with self._verrou:
+            client = self._client
+        if client is None:
+            raise RuntimeError("Aucune connexion SSH active.")
+        sftp = client.open_sftp()
+        try:
+            sftp.get(chemin_distant, chemin_local, callback=sur_progression)
+            logging.info("Fichier récupéré : %s -> %s", chemin_distant, chemin_local)
+        finally:
+            sftp.close()
 
     # -- exécution -------------------------------------------------------
 
@@ -389,7 +449,7 @@ class ExecuteurSSH:
                             if info["tampon"]:
                                 ligne = "".join(info["tampon"]) + ligne
                                 info["tampon"].clear()
-                            fil.put((ligne.rstrip("\r"), est_erreur))
+                            fil.put((nettoyer_ansi(ligne.rstrip("\r")), est_erreur))
                         if reste:
                             info["tampon"].append(reste)
                             info["temps"] = time.monotonic()
@@ -401,7 +461,7 @@ class ExecuteurSSH:
                     texte_restant = "".join(info["tampon"])
                     info["tampon"].clear()
                 if texte_restant:
-                    fil.put((texte_restant.rstrip("\r"), est_erreur))
+                    fil.put((nettoyer_ansi(texte_restant.rstrip("\r")), est_erreur))
                 fil.put(None)
 
         lecteurs = [
@@ -438,7 +498,7 @@ class ExecuteurSSH:
                                 and time.monotonic() - info["temps"] > SEUIL_INVITE
                             ):
                                 info["signale"] = True
-                                candidat = "".join(info["tampon"])
+                                candidat = nettoyer_ansi("".join(info["tampon"]))
                                 break
                     if candidat is not None:
                         reponse = sur_invite(candidat)

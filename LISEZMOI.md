@@ -1,4 +1,4 @@
-# Terminal accessible — palier 0
+# LazyShell — palier 0
 
 Coquille de l'interface. L'exécution réelle des commandes n'est pas encore
 branchée : ce palier sert à valider l'ergonomie, l'accessibilité NVDA et la
@@ -23,8 +23,9 @@ pendant l'installation, puis relancer `installer.bat`.
 - **`lancer_muet.bat`** — identique, mais sans aucune annonce envoyée à NVDA.
   À utiliser dès qu'on touche à la couche vocale, pour se prémunir d'une
   boucle qui partirait en vrille.
-- **`compiler.bat`** — produit l'exécutable unique dans le sous-dossier
-  `dist`. À réserver aux paliers, pas aux itérations.
+- **`compiler.bat`** — produit l'application compilée dans le sous-dossier
+  `dist\LazyShell`. C'est ce dossier complet qu'il faut copier ou distribuer,
+  pas seulement `LazyShell.exe`. À réserver aux paliers, pas aux itérations.
 
 Une fenêtre console apparaît pendant l'exécution via `lancer.bat` : c'est
 volontaire, elle capte les erreurs de démarrage. L'exécutable compilé, lui,
@@ -32,7 +33,7 @@ n'en ouvre aucune.
 
 ## Le journal
 
-Tout est consigné dans **`terminal.log`**, à côté du script : démarrage,
+Tout est consigné dans **`lazyshell.log`**, à côté du script : démarrage,
 sessions ouvertes, commandes, erreurs, et la trace complète de toute
 exception. Le menu Aide propose « Ouvrir le journal ».
 
@@ -52,7 +53,7 @@ sur le dépôt GitHub de NVDA, dans `extras/controllerClient`.
 
 Une fois l'archive décompressée, prendre le fichier du dossier **x64**
 (`nvdaControllerClient64.dll` ou `nvdaControllerClient.dll` selon la version)
-et le déposer soit à côté de `terminal_accessible.py`, soit dans un
+et le déposer soit à côté de `lazyshell.py`, soit dans un
 sous-dossier `dll`.
 
 Sans cette DLL, l'application démarre et fonctionne normalement : seule

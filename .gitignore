@@ -10,7 +10,7 @@ dist/
 *.spec
 
 # Journaux, propres a chaque machine
-terminal.log
+lazyshell.log
 installation.log
 
 # Contient le PATH utilisateur, donc le nom de compte Windows
@@ -29,5 +29,12 @@ nvdaControllerClient*.dll
 # (mots de passe/passphrases vont dans le Gestionnaire d'identifiants
 # Windows via keyring), mais ca reste des informations sur des serveurs
 # reels a ne pas publier.
-profils_ssh.json
-hotes_ssh_connus
+ssh_profiles.json
+known_hosts
+
+# Preferences locales (taille de police...), propres a chaque poste.
+settings.json
+
+# Commandes enregistrees par l'utilisateur : personnelles a son usage,
+# peuvent reveler des noms de serveurs ou de projets internes.
+commands.json

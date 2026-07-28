@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Terminal accessible — palier 0
+LazyShell — palier 0
 
 Coquille complète de l'interface : fenêtre, onglets de session, champ de
 saisie, champ de sortie, modèle de blocs, navigation, copie et couche
@@ -19,13 +19,14 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import json
 import logging
 import re
 import sys
 import threading
 import time
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -42,7 +43,7 @@ from ssh import (
     supprimer_secret,
 )
 
-APP_NOM = "Terminal accessible"
+APP_NOM = "LazyShell"
 VERSION = "0.3 (palier 2)"
 
 # Niveaux de verbosité de l'annonce vocale
@@ -68,6 +69,18 @@ LONGUEUR_COMMANDE_ENTETE = 60  # au-delà, la commande est tronquée
 # besoin d'être vue, et le braille ne devrait pas l'afficher en clair.
 MOTIF_MOT_DE_PASSE = re.compile(r"password|mot de passe|passphrase", re.IGNORECASE)
 
+# Taille de police : bornes larges, pensées pour un usage malvoyant, pas
+# seulement pour un confort de lecture ordinaire.
+TAILLE_POLICE_DEFAUT = 11
+TAILLE_POLICE_MIN = 8
+TAILLE_POLICE_MAX = 32
+TAILLES_POLICE_PRESETS = {
+    "Petite": 9,
+    "Normale": TAILLE_POLICE_DEFAUT,
+    "Grande": 16,
+    "Très grande": 22,
+}
+
 
 # --------------------------------------------------------------------------
 # Chemins et journal
@@ -80,8 +93,39 @@ def dossier_base() -> Path:
     return Path(__file__).resolve().parent
 
 
+def _chemin_reglages() -> Path:
+    return dossier_base() / "settings.json"
+
+
+def charger_reglages() -> dict:
+    """Lit le fichier de réglages. Repli silencieux sur un dict vide si le
+    fichier est absent ou illisible : un réglage de confort ne doit jamais
+    empêcher l'application de démarrer."""
+    try:
+        return json.loads(_chemin_reglages().read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def enregistrer_reglages(reglages: "Reglages") -> None:
+    """Réécrit le fichier de réglages en entier. Appelé à chaque
+    changement pour rester simple : le fichier est minuscule, pas besoin
+    d'écriture incrémentale."""
+    donnees = {
+        "taille_police": reglages.taille_police,
+        "verbosite": reglages.verbosite,
+        "suivre_sortie": reglages.suivre_sortie,
+        "listing_lisible": reglages.listing_lisible,
+        "afficher_horodatage": reglages.afficher_horodatage,
+    }
+    try:
+        _chemin_reglages().write_text(json.dumps(donnees), encoding="utf-8")
+    except OSError:
+        logging.exception("Impossible d'enregistrer les réglages.")
+
+
 def configurer_journal() -> Path:
-    chemin = dossier_base() / "terminal.log"
+    chemin = dossier_base() / "lazyshell.log"
     logging.basicConfig(
         filename=str(chemin),
         filemode="a",
@@ -122,7 +166,8 @@ def configurer_journal() -> Path:
 
 class Voix:
     """
-    Parle via le client contrôleur de NVDA.
+    Parle via le client contrôleur de NVDA, et par un second canal pour
+    JAWS (voir _charger_jaws).
 
     La DLL n'est PAS fournie avec NVDA : il faut la télécharger séparément
     (voir LISEZMOI.md) et la déposer à côté de ce script, ou dans un
@@ -136,6 +181,17 @@ class Voix:
         "nvdaControllerClient32.dll",
     )
 
+    # Identifiants COM candidats pour JAWS. Contrairement à la DLL NVDA,
+    # il n'existe pas de SDK officiel simple et unique pour ça : ce sont
+    # les identifiants les plus couramment cités pour l'automatisation
+    # JAWS, jamais vérifiés avec un JAWS réel faute d'accès à l'un ou
+    # l'autre. D'où la liste (on essaie chacun) plutôt qu'un seul nom
+    # supposé certain, et la dégradation silencieuse si aucun ne répond.
+    NOMS_COM_JAWS = (
+        "FreedomScientific.JawsApi",
+        "jfwapi.JawsApi",
+    )
+
     # Au delà, on n'envoie pas le texte a l'afficheur braille : un message
     # braille long chasse ce que l'utilisateur est en train de lire.
     LIMITE_BRAILLE = 120
@@ -143,10 +199,12 @@ class Voix:
     def __init__(self, muet: bool = False):
         self.muet = muet
         self._dll = None
+        self._jaws = None
         if muet:
             logging.info("Couche vocale désactivée (option --muet).")
             return
         self._charger()
+        self._charger_jaws()
 
     # Dossiers volumineux qu'il est inutile de parcourir.
     IGNORER = {"venv", "build", "dist", ".git", "__pycache__", "node_modules"}
@@ -160,7 +218,8 @@ class Voix:
         """
         trouves: list[Path] = []
         for chemin in base.rglob("nvdaControllerClient*.dll"):
-            if any(part in self.IGNORER for part in chemin.parts):
+            relatif = chemin.relative_to(base)
+            if any(part in self.IGNORER for part in relatif.parts):
                 continue
             if chemin.is_file() and chemin not in trouves:
                 trouves.append(chemin)
@@ -224,9 +283,39 @@ class Voix:
                 "n'est probablement pas lancé.", code,
             )
 
+    def _charger_jaws(self) -> None:
+        """Canal JAWS, en parallèle du client NVDA.
+
+        Repose sur l'interface COM d'automatisation de JAWS (SayString),
+        jamais testée avec un JAWS réel — voir NOMS_COM_JAWS. Si pywin32
+        est absent, si JAWS n'est pas installé, ou si l'identifiant COM
+        est incorrect, ceci échoue en silence exactement comme l'absence
+        de la DLL NVDA : aucune conséquence pour un utilisateur NVDA.
+        """
+        try:
+            import win32com.client
+        except ImportError:
+            logging.info("pywin32 absent : canal JAWS indisponible.")
+            return
+
+        for prog_id in self.NOMS_COM_JAWS:
+            try:
+                jaws = win32com.client.Dispatch(prog_id)
+                jaws.SayString("", False)  # confirme que l'appel ne lève pas
+            except Exception:
+                continue
+            self._jaws = jaws
+            logging.info("Client JAWS chargé via %s.", prog_id)
+            return
+
+        logging.info(
+            "JAWS non détecté (aucun identifiant COM connu n'a répondu) : "
+            "canal JAWS inactif."
+        )
+
     @property
     def disponible(self) -> bool:
-        return self._dll is not None and not self.muet
+        return (self._dll is not None or self._jaws is not None) and not self.muet
 
     def dire(
         self,
@@ -247,24 +336,39 @@ class Voix:
         """
         if not self.disponible:
             return
-        try:
-            if texte:
-                if interrompre:
-                    self._dll.nvdaController_cancelSpeech()
-                self._dll.nvdaController_speakText(texte)
-            message = braille if braille is not None else texte
-            if message and len(message) <= self.LIMITE_BRAILLE:
-                self._dll.nvdaController_brailleMessage(message)
-        except Exception:
-            logging.exception("Échec de l'annonce.")
+        if self._dll is not None:
+            try:
+                if texte:
+                    if interrompre:
+                        self._dll.nvdaController_cancelSpeech()
+                    self._dll.nvdaController_speakText(texte)
+                message = braille if braille is not None else texte
+                if message and len(message) <= self.LIMITE_BRAILLE:
+                    self._dll.nvdaController_brailleMessage(message)
+            except Exception:
+                logging.exception("Échec de l'annonce NVDA.")
+        # JAWS n'a pas d'équivalent confirmé du canal braille séparé de
+        # NVDA : seule la parole passe par ce canal, JAWS gérant son
+        # afficheur braille lui-même via son suivi de focus habituel.
+        if self._jaws is not None and texte:
+            try:
+                self._jaws.SayString(texte, interrompre)
+            except Exception:
+                logging.exception("Échec de l'annonce JAWS.")
 
     def taire(self) -> None:
         if not self.disponible:
             return
-        try:
-            self._dll.nvdaController_cancelSpeech()
-        except Exception:
-            logging.exception("Échec de l'interruption de la parole.")
+        if self._dll is not None:
+            try:
+                self._dll.nvdaController_cancelSpeech()
+            except Exception:
+                logging.exception("Échec de l'interruption de la parole (NVDA).")
+        if self._jaws is not None:
+            try:
+                self._jaws.StopSpeech()
+            except Exception:
+                logging.exception("Échec de l'interruption de la parole (JAWS).")
 
 
 def bip_travail() -> None:
@@ -467,11 +571,58 @@ class Reglages:
     """
 
     def __init__(self):
-        self.verbosite = VERBOSITE_RESUME_PLUS
+        donnees = charger_reglages()
         self.sons = True
-        self.afficher_horodatage = False
-        self.listing_lisible = True
-        self.suivre_sortie = False
+        try:
+            verbosite = int(donnees.get("verbosite", VERBOSITE_RESUME_PLUS))
+            self.verbosite = verbosite if verbosite in NOMS_VERBOSITE else VERBOSITE_RESUME_PLUS
+        except (TypeError, ValueError):
+            self.verbosite = VERBOSITE_RESUME_PLUS
+        self.afficher_horodatage = bool(donnees.get("afficher_horodatage", False))
+        self.listing_lisible = bool(donnees.get("listing_lisible", True))
+        self.suivre_sortie = bool(donnees.get("suivre_sortie", False))
+        try:
+            taille = int(donnees.get("taille_police", TAILLE_POLICE_DEFAUT))
+        except (TypeError, ValueError):
+            taille = TAILLE_POLICE_DEFAUT
+        self.taille_police = max(TAILLE_POLICE_MIN, min(TAILLE_POLICE_MAX, taille))
+
+
+# --------------------------------------------------------------------------
+# Commandes enregistrées
+# --------------------------------------------------------------------------
+
+@dataclass
+class CommandeEnregistree:
+    nom: str
+    commande: str
+
+
+def _chemin_commandes() -> Path:
+    return dossier_base() / "commands.json"
+
+
+def charger_commandes() -> list[CommandeEnregistree]:
+    chemin = _chemin_commandes()
+    if not chemin.exists():
+        return []
+    try:
+        donnees = json.loads(chemin.read_text(encoding="utf-8"))
+        return [CommandeEnregistree(**d) for d in donnees]
+    except (OSError, json.JSONDecodeError, TypeError):
+        logging.exception("Commandes enregistrées illisibles, ignorées : %s", chemin)
+        return []
+
+
+def enregistrer_commandes(commandes: list[CommandeEnregistree]) -> None:
+    chemin = _chemin_commandes()
+    donnees = [asdict(c) for c in commandes]
+    try:
+        chemin.write_text(
+            json.dumps(donnees, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        logging.exception("Impossible d'enregistrer les commandes.")
 
 
 # --------------------------------------------------------------------------
@@ -479,7 +630,7 @@ class Reglages:
 # --------------------------------------------------------------------------
 
 MESSAGE_ACCUEIL = """\
-Terminal accessible, palier 2.
+LazyShell, palier 2.
 
 Les commandes sont exécutées réellement, en local via PowerShell, ou à
 distance par SSH (menu Session → Nouvelle session). Aucune fenêtre de
@@ -505,9 +656,15 @@ Raccourcis :
   Ctrl+Maj+V          changer le niveau de verbosité vocale
   Ctrl+Maj+H          afficher ou masquer l'horodatage des blocs
   Ctrl+Maj+D          changer de répertoire courant
+  Ctrl+Maj+E          envoyer un fichier (session SSH)
+  Ctrl+Maj+T          récupérer un fichier (session SSH)
   Ctrl+Maj+N          listing amélioré (nom en tête de ligne)
   Ctrl+Maj+R          relire la saisie en cours
   Ctrl+Maj+U          aller automatiquement à la sortie après chaque commande
+  Ctrl+Maj+J          utiliser une commande enregistrée
+  Ctrl+Maj+M          enregistrer la commande actuelle
+  Ctrl+=              agrandir la police
+  Ctrl+-              réduire la police
   Ctrl+T              nouvelle session
   Ctrl+Maj+O          nouvelle session SSH
   Ctrl+Tab            session suivante
@@ -547,8 +704,6 @@ class PanneauSession(wx.Panel):
         self._debut = 0.0
         self._invite_boite: wx.TextEntryDialog | None = None
 
-        police = wx.Font(wx.FontInfo(11).Family(wx.FONTFAMILY_TELETYPE))
-
         etiquette_saisie = wx.StaticText(self, label=f"&Commande — {nom} :")
         # Multiligne pour accepter les commandes sur plusieurs lignes.
         # Entrée envoie, Maj+Entrée saute une ligne : on gère les deux
@@ -556,7 +711,6 @@ class PanneauSession(wx.Panel):
         # comportement sur un contrôle multiligne varie selon les versions.
         self.saisie = wx.TextCtrl(self, style=wx.TE_MULTILINE)
         self.saisie.SetName(f"Commande, {nom}")
-        self.saisie.SetFont(police)
         self.saisie.SetMinSize((-1, 64))
 
         etiquette_sortie = wx.StaticText(self, label=f"&Sortie — {nom} :")
@@ -565,9 +719,9 @@ class PanneauSession(wx.Panel):
             style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2 | wx.TE_DONTWRAP,
         )
         self.sortie.SetName(f"Sortie, {nom}")
-        self.sortie.SetFont(police)
         self.sortie.SetValue(MESSAGE_ACCUEIL)
         self.sortie.SetInsertionPoint(0)
+        self.appliquer_taille_police()
 
         boite = wx.BoxSizer(wx.VERTICAL)
         boite.Add(etiquette_saisie, 0, wx.LEFT | wx.RIGHT | wx.TOP, 6)
@@ -578,6 +732,17 @@ class PanneauSession(wx.Panel):
 
         self.saisie.Bind(wx.EVT_KEY_DOWN, self.sur_touche_saisie)
         self.sortie.Bind(wx.EVT_CHAR, self.sur_frappe_dans_sortie)
+
+    def appliquer_taille_police(self) -> None:
+        """Reconstruit et repose la police sur les deux champs, à la
+        taille actuellement réglée. Appelé à la création du panneau, et
+        de nouveau par Fenetre sur chaque session ouverte quand la
+        taille change en cours d'usage."""
+        police = wx.Font(
+            wx.FontInfo(self.reglages.taille_police).Family(wx.FONTFAMILY_TELETYPE)
+        )
+        self.saisie.SetFont(police)
+        self.sortie.SetFont(police)
 
     # -- saisie ------------------------------------------------------------
 
@@ -1254,6 +1419,207 @@ class DialogueGestionProfils(wx.Dialog):
 
 
 # --------------------------------------------------------------------------
+# Boîtes de dialogue : commandes enregistrées
+# --------------------------------------------------------------------------
+
+class DialogueCommandeEnregistree(wx.Dialog):
+    """Création ou modification d'une commande enregistrée."""
+
+    def __init__(
+        self, parent, commande: CommandeEnregistree | None = None,
+        texte_initial: str = "",
+    ):
+        titre = "Modifier la commande" if commande else "Nouvelle commande enregistrée"
+        super().__init__(parent, title=titre, style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+
+        etiquette_nom = wx.StaticText(self, label="&Nom :")
+        self.champ_nom = wx.TextCtrl(self, value=commande.nom if commande else "")
+
+        etiquette_commande = wx.StaticText(self, label="&Commande :")
+        valeur_commande = commande.commande if commande else texte_initial
+        self.champ_commande = wx.TextCtrl(
+            self, value=valeur_commande, style=wx.TE_MULTILINE,
+        )
+        self.champ_commande.SetMinSize((360, 80))
+
+        boutons = self.CreateButtonSizer(wx.OK | wx.CANCEL)
+        self.Bind(wx.EVT_BUTTON, self._sur_ok, id=wx.ID_OK)
+
+        boite = wx.BoxSizer(wx.VERTICAL)
+        boite.Add(etiquette_nom, 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        boite.Add(self.champ_nom, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+        boite.Add(etiquette_commande, 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        boite.Add(self.champ_commande, 1, wx.EXPAND | wx.ALL, 10)
+        boite.Add(boutons, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        self.SetSizerAndFit(boite)
+        self.SetSize((420, 260))
+        self.champ_nom.SetFocus()
+
+    def _sur_ok(self, evt):
+        if not self.champ_nom.GetValue().strip():
+            wx.MessageBox(
+                "Le nom est obligatoire.",
+                "Commande incomplète", wx.OK | wx.ICON_WARNING,
+            )
+            self.champ_nom.SetFocus()
+            return
+        if not self.champ_commande.GetValue().strip():
+            wx.MessageBox(
+                "La commande est obligatoire.",
+                "Commande incomplète", wx.OK | wx.ICON_WARNING,
+            )
+            self.champ_commande.SetFocus()
+            return
+        self.EndModal(wx.ID_OK)
+
+    def commande_enregistree(self) -> CommandeEnregistree:
+        return CommandeEnregistree(
+            nom=self.champ_nom.GetValue().strip(),
+            commande=self.champ_commande.GetValue().strip(),
+        )
+
+
+class DialogueGestionCommandes(wx.Dialog):
+    """Créer, modifier ou supprimer des commandes enregistrées."""
+
+    def __init__(self, parent):
+        super().__init__(
+            parent, title="Commandes enregistrées",
+            style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
+        )
+        self.commandes = charger_commandes()
+
+        etiquette = wx.StaticText(self, label="&Commandes :")
+        self.liste = wx.ListBox(self, choices=self._libelles())
+
+        bouton_nouveau = wx.Button(self, label="&Nouvelle…")
+        bouton_nouveau.Bind(wx.EVT_BUTTON, self._sur_nouveau)
+        bouton_modifier = wx.Button(self, label="&Modifier…")
+        bouton_modifier.Bind(wx.EVT_BUTTON, self._sur_modifier)
+        bouton_supprimer = wx.Button(self, label="&Supprimer")
+        bouton_supprimer.Bind(wx.EVT_BUTTON, self._sur_supprimer)
+        bouton_fermer = wx.Button(self, id=wx.ID_CANCEL, label="Fer&mer")
+
+        boutons = wx.BoxSizer(wx.HORIZONTAL)
+        for bouton in (bouton_nouveau, bouton_modifier, bouton_supprimer, bouton_fermer):
+            boutons.Add(bouton, 0, wx.RIGHT, 6)
+
+        boite = wx.BoxSizer(wx.VERTICAL)
+        boite.Add(etiquette, 0, wx.LEFT | wx.RIGHT | wx.TOP, 8)
+        boite.Add(self.liste, 1, wx.EXPAND | wx.ALL, 8)
+        boite.Add(boutons, 0, wx.ALIGN_RIGHT | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+        self.SetSizer(boite)
+        self.SetSize((520, 320))
+        self.liste.SetFocus()
+
+    def _libelles(self):
+        return [f"{c.nom} — {c.commande}" for c in self.commandes]
+
+    def _selection(self) -> CommandeEnregistree | None:
+        index = self.liste.GetSelection()
+        if index == wx.NOT_FOUND:
+            return None
+        return self.commandes[index]
+
+    def _rafraichir(self, selectionner: str | None = None):
+        self.liste.Set(self._libelles())
+        if selectionner is not None:
+            for i, c in enumerate(self.commandes):
+                if c.nom == selectionner:
+                    self.liste.SetSelection(i)
+                    break
+        enregistrer_commandes(self.commandes)
+
+    def _sur_nouveau(self, evt):
+        with DialogueCommandeEnregistree(self) as boite:
+            if boite.ShowModal() != wx.ID_OK:
+                return
+            commande = boite.commande_enregistree()
+            if any(c.nom == commande.nom for c in self.commandes):
+                wx.MessageBox(
+                    f"Une commande « {commande.nom} » existe déjà.",
+                    "Nom déjà utilisé", wx.OK | wx.ICON_WARNING,
+                )
+                return
+            self.commandes.append(commande)
+            self._rafraichir(commande.nom)
+
+    def _sur_modifier(self, evt):
+        commande = self._selection()
+        if commande is None:
+            return
+        with DialogueCommandeEnregistree(self, commande) as boite:
+            if boite.ShowModal() != wx.ID_OK:
+                return
+            nouvelle = boite.commande_enregistree()
+            index = self.commandes.index(commande)
+            self.commandes[index] = nouvelle
+            self._rafraichir(nouvelle.nom)
+
+    def _sur_supprimer(self, evt):
+        commande = self._selection()
+        if commande is None:
+            return
+        reponse = wx.MessageBox(
+            f"Supprimer la commande « {commande.nom} » ?",
+            "Supprimer la commande", wx.YES_NO | wx.ICON_QUESTION,
+        )
+        if reponse != wx.YES:
+            return
+        self.commandes.remove(commande)
+        self._rafraichir()
+
+
+class DialogueChoisirCommande(wx.Dialog):
+    """Choisir une commande enregistrée à placer dans la saisie.
+
+    Même disposition qu'un choix de bloc (DialogueListeBlocs) : la
+    commande choisie est déposée dans le champ de saisie de la session
+    courante, jamais exécutée directement — on garde le principe d'une
+    commande à la fois, avec relecture possible avant l'envoi."""
+
+    def __init__(self, parent, commandes: list[CommandeEnregistree]):
+        super().__init__(
+            parent, title="Utiliser une commande enregistrée",
+            style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
+        )
+        self.commandes = commandes
+        self.commande_choisie: CommandeEnregistree | None = None
+
+        etiquette = wx.StaticText(self, label="&Commandes :")
+        self.liste = wx.ListBox(self, choices=self._libelles())
+        self.liste.SetSelection(0)
+        self.liste.Bind(wx.EVT_LISTBOX_DCLICK, self._sur_utiliser)
+
+        bouton_utiliser = wx.Button(self, label="&Utiliser")
+        bouton_utiliser.SetDefault()
+        bouton_utiliser.Bind(wx.EVT_BUTTON, self._sur_utiliser)
+        bouton_fermer = wx.Button(self, id=wx.ID_CANCEL, label="Fer&mer")
+
+        boutons = wx.BoxSizer(wx.HORIZONTAL)
+        boutons.Add(bouton_utiliser, 0, wx.RIGHT, 6)
+        boutons.Add(bouton_fermer, 0)
+
+        boite = wx.BoxSizer(wx.VERTICAL)
+        boite.Add(etiquette, 0, wx.LEFT | wx.RIGHT | wx.TOP, 8)
+        boite.Add(self.liste, 1, wx.EXPAND | wx.ALL, 8)
+        boite.Add(boutons, 0, wx.ALIGN_RIGHT | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+        self.SetSizer(boite)
+        self.SetSize((480, 360))
+        self.liste.SetFocus()
+
+    def _libelles(self):
+        return [f"{c.nom} — {c.commande}" for c in self.commandes]
+
+    def _sur_utiliser(self, evt):
+        index = self.liste.GetSelection()
+        if index == wx.NOT_FOUND:
+            return
+        self.commande_choisie = self.commandes[index]
+        self.EndModal(wx.ID_OK)
+
+
+# --------------------------------------------------------------------------
 # Fenêtre principale
 # --------------------------------------------------------------------------
 
@@ -1368,11 +1734,29 @@ class Fenetre(wx.Frame):
         self.Bind(wx.EVT_MENU,
                   lambda e: self.changer_repertoire(),
                   m_session.Append(wx.ID_ANY, "Changer de &répertoire\tCtrl+Shift+D"))
+        self.Bind(wx.EVT_MENU,
+                  lambda e: self.envoyer_fichier_ssh(),
+                  m_session.Append(wx.ID_ANY, "&Envoyer un fichier…\tCtrl+Shift+E"))
+        self.Bind(wx.EVT_MENU,
+                  lambda e: self.recuperer_fichier_ssh(),
+                  m_session.Append(wx.ID_ANY, "&Récupérer un fichier…\tCtrl+Shift+T"))
         m_session.AppendSeparator()
         self.Bind(wx.EVT_MENU,
                   lambda e: self.Close(),
                   m_session.Append(wx.ID_EXIT, "&Quitter\tAlt+F4"))
         barre.Append(m_session, "&Session")
+
+        m_commandes = wx.Menu()
+        self.Bind(wx.EVT_MENU,
+                  lambda e: self.utiliser_commande_enregistree(),
+                  m_commandes.Append(wx.ID_ANY, "&Utiliser une commande enregistrée…\tCtrl+Shift+J"))
+        self.Bind(wx.EVT_MENU,
+                  lambda e: self.enregistrer_commande_actuelle(),
+                  m_commandes.Append(wx.ID_ANY, "Enregistrer la commande &actuelle…\tCtrl+Shift+M"))
+        self.Bind(wx.EVT_MENU,
+                  lambda e: self.gerer_commandes_enregistrees(),
+                  m_commandes.Append(wx.ID_ANY, "&Gérer les commandes enregistrées…"))
+        barre.Append(m_commandes, "&Commandes")
 
         m_bloc = wx.Menu()
         self.Bind(wx.EVT_MENU,
@@ -1434,6 +1818,14 @@ class Fenetre(wx.Frame):
         self.Bind(wx.EVT_MENU,
                   lambda e: self.basculer_horodatage(),
                   self.item_horodatage)
+
+        m_taille = wx.Menu()
+        for nom_preset, valeur in TAILLES_POLICE_PRESETS.items():
+            self.Bind(wx.EVT_MENU,
+                      lambda e, v=valeur: self.definir_taille_police(v),
+                      m_taille.Append(wx.ID_ANY, f"{nom_preset} ({valeur})"))
+        m_affichage.AppendSubMenu(m_taille, "&Taille de la police")
+
         self.Bind(wx.EVT_MENU,
                   lambda e: self.effacer_sortie(),
                   m_affichage.Append(wx.ID_ANY, "&Effacer la sortie"))
@@ -1488,6 +1880,62 @@ class Fenetre(wx.Frame):
 
     def gerer_profils_ssh(self):
         with DialogueGestionProfils(self) as boite:
+            boite.ShowModal()
+
+    # -- commandes enregistrées ---------------------------------------------
+
+    def utiliser_commande_enregistree(self) -> None:
+        panneau = self.session()
+        if panneau is None:
+            return
+        commandes = charger_commandes()
+        if not commandes:
+            wx.MessageBox(
+                "Aucune commande enregistrée pour l'instant. Tapez une "
+                "commande dans la saisie, puis utilisez le menu Commandes "
+                "→ Enregistrer la commande actuelle.",
+                "Aucune commande enregistrée", wx.OK | wx.ICON_INFORMATION,
+            )
+            return
+        with DialogueChoisirCommande(self, commandes) as boite:
+            if boite.ShowModal() != wx.ID_OK or boite.commande_choisie is None:
+                return
+            choisie = boite.commande_choisie
+        panneau.saisie.SetValue(choisie.commande)
+        panneau.saisie.SetFocus()
+        panneau.saisie.SetInsertionPointEnd()
+        self.voix.dire(
+            choisie.commande, braille=choisie.commande, interrompre=True,
+        )
+
+    def enregistrer_commande_actuelle(self) -> None:
+        panneau = self.session()
+        if panneau is None:
+            return
+        texte = panneau.saisie.GetValue().strip()
+        if not texte:
+            wx.MessageBox(
+                "Le champ de saisie est vide : rien à enregistrer.",
+                "Rien à enregistrer", wx.OK | wx.ICON_WARNING,
+            )
+            return
+        commandes = charger_commandes()
+        with DialogueCommandeEnregistree(self, texte_initial=texte) as boite:
+            if boite.ShowModal() != wx.ID_OK:
+                return
+            nouvelle = boite.commande_enregistree()
+        if any(c.nom == nouvelle.nom for c in commandes):
+            wx.MessageBox(
+                f"Une commande « {nouvelle.nom} » existe déjà.",
+                "Nom déjà utilisé", wx.OK | wx.ICON_WARNING,
+            )
+            return
+        commandes.append(nouvelle)
+        enregistrer_commandes(commandes)
+        self.voix.dire(f"Commande « {nouvelle.nom} » enregistrée.", interrompre=True)
+
+    def gerer_commandes_enregistrees(self) -> None:
+        with DialogueGestionCommandes(self) as boite:
             boite.ShowModal()
 
     def _verifier_hote_ssh(self, message: str) -> bool:
@@ -1693,6 +2141,7 @@ class Fenetre(wx.Frame):
     def changer_verbosite(self):
         self.reglages.verbosite = (self.reglages.verbosite + 1) % 3
         nom = NOMS_VERBOSITE[self.reglages.verbosite]
+        enregistrer_reglages(self.reglages)
         self.SetStatusText(f"Verbosité : {nom}")
         self.voix.dire(f"Verbosité : {nom}.", interrompre=True)
         logging.info("Verbosité changée : %s", nom)
@@ -1730,6 +2179,125 @@ class Fenetre(wx.Frame):
         self.voix.dire(f"Répertoire : {panneau.repertoire}", interrompre=True)
         logging.info("[%s] répertoire : %s", panneau.nom, panneau.repertoire)
 
+    # -- transfert de fichiers (SFTP) ---------------------------------------
+
+    def envoyer_fichier_ssh(self):
+        panneau = self.session()
+        if panneau is None or not panneau.distant:
+            self.voix.dire("Cette action nécessite une session SSH.", interrompre=True)
+            return
+        with wx.FileDialog(
+            self, "Choisir le fichier à envoyer",
+            style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
+        ) as boite:
+            if boite.ShowModal() != wx.ID_OK:
+                return
+            chemin_local = boite.GetPath()
+
+        base = panneau.repertoire.rstrip("/") if panneau.repertoire else "."
+        suggestion = f"{base}/{Path(chemin_local).name}"
+        with wx.TextEntryDialog(
+            self, "Chemin distant de destination :",
+            "Envoyer un fichier", suggestion,
+        ) as boite:
+            if boite.ShowModal() != wx.ID_OK:
+                return
+            chemin_distant = boite.GetValue().strip()
+        if not chemin_distant:
+            return
+
+        self._lancer_transfert(panneau, "envoi", chemin_local, chemin_distant)
+
+    def recuperer_fichier_ssh(self):
+        panneau = self.session()
+        if panneau is None or not panneau.distant:
+            self.voix.dire("Cette action nécessite une session SSH.", interrompre=True)
+            return
+        base = panneau.repertoire.rstrip("/") if panneau.repertoire else "."
+        with wx.TextEntryDialog(
+            self, "Chemin distant du fichier à récupérer :",
+            "Récupérer un fichier", f"{base}/",
+        ) as boite:
+            if boite.ShowModal() != wx.ID_OK:
+                return
+            chemin_distant = boite.GetValue().strip()
+        if not chemin_distant:
+            return
+
+        nom_suggere = chemin_distant.rsplit("/", 1)[-1] or "fichier_recupere"
+        with wx.FileDialog(
+            self, "Enregistrer sous", defaultFile=nom_suggere,
+            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT,
+        ) as boite:
+            if boite.ShowModal() != wx.ID_OK:
+                return
+            chemin_local = boite.GetPath()
+
+        self._lancer_transfert(panneau, "reception", chemin_local, chemin_distant)
+
+    def _lancer_transfert(self, panneau, direction: str, chemin_local: str, chemin_distant: str):
+        """Lance un envoi ou une réception SFTP en tâche de fond.
+
+        Comme pour l'exécution de commandes, rien ne doit bloquer le
+        thread principal : un gros fichier prendrait autrement l'interface
+        en otage jusqu'à la fin du transfert.
+        """
+        nom_fichier = Path(chemin_local).name
+        verbe = "Envoi" if direction == "envoi" else "Réception"
+        self.SetStatusText(f"{verbe} de {nom_fichier}…")
+        self.voix.dire(f"{verbe} de {nom_fichier}.", interrompre=True)
+
+        dernier_pourcentage = {"valeur": -1}
+
+        def progression(transferes: int, total: int) -> None:
+            if total <= 0:
+                return
+            pourcentage = int(transferes * 100 / total)
+            # Un CallAfter par octet transféré noierait la boucle
+            # d'événements : on ne rafraîchit que tous les 10 %.
+            if pourcentage - dernier_pourcentage["valeur"] >= 10 or pourcentage == 100:
+                dernier_pourcentage["valeur"] = pourcentage
+                wx.CallAfter(
+                    self.SetStatusText, f"{verbe} de {nom_fichier} : {pourcentage} %"
+                )
+
+        def travailler():
+            try:
+                if direction == "envoi":
+                    panneau.executeur.envoyer_fichier(
+                        chemin_local, chemin_distant, progression
+                    )
+                else:
+                    panneau.executeur.recuperer_fichier(
+                        chemin_distant, chemin_local, progression
+                    )
+            except Exception as erreur:
+                logging.exception("Transfert de fichier échoué (%s)", direction)
+                wx.CallAfter(self._echec_transfert, verbe, nom_fichier, erreur)
+                return
+            wx.CallAfter(self._transfert_reussi, verbe, nom_fichier, direction,
+                          chemin_local, chemin_distant)
+
+        threading.Thread(target=travailler, daemon=True).start()
+
+    def _echec_transfert(self, verbe: str, nom_fichier: str, erreur: Exception):
+        self.SetStatusText("Transfert échoué.")
+        wx.MessageBox(
+            f"{verbe} de {nom_fichier} impossible :\n{erreur}",
+            "Transfert échoué", wx.OK | wx.ICON_ERROR,
+        )
+        self.voix.dire(f"{verbe} échoué.", interrompre=True)
+
+    def _transfert_reussi(
+        self, verbe: str, nom_fichier: str, direction: str,
+        chemin_local: str, chemin_distant: str,
+    ):
+        self.SetStatusText(f"{verbe} terminé : {nom_fichier}")
+        self.voix.dire(f"{verbe} terminé.", interrompre=True)
+        logging.info(
+            "%s réussi : local=%s distant=%s", verbe, chemin_local, chemin_distant
+        )
+
     def repeter_saisie(self):
         panneau = self.session()
         if panneau is not None:
@@ -1738,6 +2306,7 @@ class Fenetre(wx.Frame):
     def basculer_suivi(self):
         self.reglages.suivre_sortie = not self.reglages.suivre_sortie
         self.item_suivre.Check(self.reglages.suivre_sortie)
+        enregistrer_reglages(self.reglages)
         etat = "activé" if self.reglages.suivre_sortie else "désactivé"
         self.SetStatusText(f"Suivi de la sortie {etat}")
         self.voix.dire(f"Suivi de la sortie {etat}.", interrompre=True)
@@ -1746,6 +2315,7 @@ class Fenetre(wx.Frame):
     def basculer_listing(self):
         self.reglages.listing_lisible = not self.reglages.listing_lisible
         self.item_listing.Check(self.reglages.listing_lisible)
+        enregistrer_reglages(self.reglages)
         etat = "activé" if self.reglages.listing_lisible else "désactivé"
         self.SetStatusText(f"Listing amélioré {etat}")
         self.voix.dire(f"Listing amélioré {etat}.", interrompre=True)
@@ -1756,10 +2326,26 @@ class Fenetre(wx.Frame):
         self.item_horodatage.Check(self.reglages.afficher_horodatage)
         for index in range(self.carnet.GetPageCount()):
             self.carnet.GetPage(index).redessiner()
+        enregistrer_reglages(self.reglages)
         etat = "affiche" if self.reglages.afficher_horodatage else "masque"
         self.SetStatusText(f"Horodatage {etat}")
         self.voix.dire(f"Horodatage {etat}.", interrompre=True)
         logging.info("Horodatage %s", etat)
+
+    def definir_taille_police(self, taille: int) -> None:
+        taille = max(TAILLE_POLICE_MIN, min(TAILLE_POLICE_MAX, taille))
+        if taille == self.reglages.taille_police:
+            return
+        self.reglages.taille_police = taille
+        for index in range(self.carnet.GetPageCount()):
+            self.carnet.GetPage(index).appliquer_taille_police()
+        enregistrer_reglages(self.reglages)
+        self.SetStatusText(f"Taille de police : {taille}")
+        self.voix.dire(f"Taille de police {taille}.", interrompre=True)
+        logging.info("Taille de police réglée à %s", taille)
+
+    def ajuster_taille_police(self, delta: int) -> None:
+        self.definir_taille_police(self.reglages.taille_police + delta)
 
     def effacer_sortie(self):
         panneau = self.session()
@@ -1793,10 +2379,15 @@ class Fenetre(wx.Frame):
             )
 
     def a_propos(self):
-        etat = (
-            "opérationnelle" if self.voix.disponible
-            else "indisponible (client contrôleur NVDA absent ou mode muet)"
-        )
+        if self.voix.muet:
+            etat = "désactivée (mode muet)"
+        else:
+            canaux = []
+            if self.voix._dll is not None:
+                canaux.append("NVDA")
+            if self.voix._jaws is not None:
+                canaux.append("JAWS")
+            etat = f"active ({', '.join(canaux)})" if canaux else "aucun lecteur d'écran détecté"
         wx.MessageBox(
             f"{APP_NOM}\nVersion {VERSION}\n\n"
             f"Annonce vocale : {etat}\n"
@@ -1843,6 +2434,17 @@ class Fenetre(wx.Frame):
 
         if ctrl and maj and code == ord("U"):
             self.basculer_suivi()
+            return
+
+        # Comme dans un navigateur : Ctrl+= agrandit, Ctrl+- réduit.
+        # Le contrôle du Maj n'exclut rien : sur un clavier où + exige
+        # Maj, Ctrl+Maj+= doit fonctionner aussi bien que Ctrl+=.
+        if ctrl and code in (ord("="), ord("+"), wx.WXK_NUMPAD_ADD):
+            self.ajuster_taille_police(1)
+            return
+
+        if ctrl and code in (ord("-"), wx.WXK_NUMPAD_SUBTRACT):
+            self.ajuster_taille_police(-1)
             return
 
         if ctrl and maj and code == ord("R"):

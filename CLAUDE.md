@@ -32,6 +32,21 @@ confort ici : c'est le cahier des charges.**
 
 ## Décisions déjà arrêtées
 
+- **Nom du projet : LazyShell.** Choisi pour une distribution GitHub en
+  anglais ; assume le ton « terminal pour quelqu'un qui déteste la ligne
+  de commande », en cohérence avec l'objectif d'accessibilité maximale.
+  Fichiers de données à côté de l'exécutable renommés en anglais en même
+  temps : `settings.json` (ex `reglages.json`), `ssh_profiles.json` (ex
+  `profils_ssh.json`), `known_hosts` (ex `hotes_ssh_connus`),
+  `lazyshell.log` (ex `terminal.log`). Le nom de service utilisé dans le
+  Gestionnaire d'identifiants Windows (`ssh.SERVICE_KEYRING`) est passé de
+  `TerminalAccessible-SSH` à `LazyShell-SSH` ; le mot de passe déjà
+  mémorisé pour le profil `VPS Hostinger` a été recopié manuellement vers
+  le nouveau nom de service au moment du renommage, l'ancien n'a pas été
+  supprimé par précaution. Les identifiants et commentaires du code
+  restent en français (règle inchangée, voir plus haut) : seul ce qui est
+  visible depuis l'extérieur du code — nom du produit, fichiers de
+  données, exécutable — passe à l'anglais.
 - Modèle « une commande à la fois », pas de terminal interactif plein
   écran. Les invites de saisie détectées ouvrent une boîte de dialogue
   accessible.
@@ -43,6 +58,15 @@ confort ici : c'est le cahier des charges.**
   tapée dans la mauvaise session.
 - Annonce vocale par le client contrôleur NVDA, en ctypes, avec dégradation
   silencieuse si la DLL est absente.
+- **Second canal d'annonce pour JAWS** (COM, `pywin32`, voir
+  `Voix._charger_jaws`), en parallèle du client NVDA, avec la même
+  dégradation silencieuse. À la différence du canal NVDA, celui-ci n'a
+  jamais été vérifié avec un JAWS réel : l'identifiant COM et les noms de
+  méthode (`SayString`, `StopSpeech`) viennent des références les plus
+  courantes sur l'automatisation JAWS, pas d'une confirmation. Si un jour
+  quelqu'un peut tester avec un vrai JAWS et que ça ne marche pas, c'est
+  le premier endroit à vérifier — pas une raison de douter du canal NVDA,
+  qui reste indépendant et déjà validé.
 - **Le statut passe toujours avant le contenu dans une annonce**, pour
   qu'on puisse couper la parole dès qu'on sait que la commande a réussi.
 - Règles de verbosité : sortie vide et code 0 donnent « Terminé » ; moins de
@@ -52,7 +76,7 @@ confort ici : c'est le cahier des charges.**
   ou Gestionnaire d'identifiants Windows via `keyring`.
 - Clé d'hôte SSH mémorisée à la première connexion (principe du
   known_hosts d'OpenSSH), dans un fichier propre à l'application
-  (`hotes_ssh_connus`), jamais celui de l'utilisateur. Toute clé qui
+  (`known_hosts`), jamais celui de l'utilisateur. Toute clé qui
   change ensuite doit être confirmée explicitement par une boîte de
   dialogue : jamais d'acceptation automatique et silencieuse.
 - SSH sans pseudo-terminal (`get_pty=False`) : stdout et stderr restent
@@ -64,14 +88,39 @@ confort ici : c'est le cahier des charges.**
 - Interruption d'une commande par **Ctrl+Maj+K**, raccourci principal
   (Ctrl+Pause existe toujours en secours mais n'est pas mis en avant :
   absente ou remappée sur certains claviers).
+- **Commandes enregistrées** (`CommandeEnregistree`, `commands.json`,
+  menu &Commandes) : un nom associé à une commande longue tapée
+  régulièrement. Ctrl+Maj+J l'insère dans la saisie de la session
+  courante — jamais exécutée directement, exactement comme le rappel
+  d'historique aux flèches — pour rester sur le principe d'une commande
+  à la fois et laisser une chance de relire ou modifier avant l'envoi.
+  Ctrl+Maj+M enregistre le contenu actuel de la saisie sous un nom
+  choisi. Aucun secret là-dedans, donc pas de passage par `keyring` :
+  juste un fichier JSON de plus à côté de l'exécutable, sur le même
+  principe que `ssh_profiles.json`.
+- **Compilation en mode dossier (`--onedir`), pas `--onefile`.** Un
+  `--onefile` réextrait tout dans un dossier temporaire (`sys._MEIPASS`)
+  à chaque lancement, ce qui coûte une vraie latence au démarrage —
+  sensible pour un utilisateur qui attend l'annonce vocale. En
+  `--onedir`, PyInstaller 6 range déjà tout seul les bibliothèques
+  Python dans un sous-dossier `_internal` à côté de l'exe : rien à
+  organiser à la main. Le dossier `dist\LazyShell` entier (exe +
+  `_internal` + `nvdaControllerClient.dll` copiée à côté par
+  `compiler.bat` + fichiers de données créés au premier lancement)
+  reste déplaçable tel quel (clé USB, autre machine) sans installation :
+  la portabilité tient à `dossier_base()`, qui pointe toujours sur le
+  dossier de l'exe, pas au fait que ce soit un fichier unique.
 
 ## Comment lancer et tester
 
 - `lancer.bat` — démarre l'application (aucune compilation nécessaire).
 - `lancer_muet.bat` — idem sans annonce vocale, à utiliser dès qu'on touche
   à la couche vocale, pour éviter une boucle de parole incontrôlée.
-- `compiler.bat` — produit l'exécutable via PyInstaller. Réservé aux paliers.
-- `terminal.log` — journal complet, y compris les exceptions non rattrapées.
+- `compiler.bat` — produit l'exécutable via PyInstaller, en mode dossier
+  (voir décision ci-dessus). Réservé aux paliers. Résultat dans
+  `dist\LazyShell\` : c'est ce dossier complet qu'il faut distribuer ou
+  copier ailleurs, jamais `LazyShell.exe` seul.
+- `lazyshell.log` — journal complet, y compris les exceptions non rattrapées.
   C'est la première chose à lire en cas de problème.
 
 L'environnement Python est dans `venv`. Utiliser
@@ -87,7 +136,7 @@ L'environnement Python est dans `venv`. Utiliser
   invites de saisie (fragment de ligne sans retour à la ligne, silencieux
   plus de 1,5 s) ouvrant une boîte de dialogue accessible.
 - **Palier 2, fait** — SSH par Paramiko (`ssh.ExecuteurSSH`, même contrat
-  que `ExecuteurLocal`), profils de connexion (`profils_ssh.json`, non
+  que `ExecuteurLocal`), profils de connexion (`ssh_profiles.json`, non
   secrets), identifiants dans le Gestionnaire d'identifiants Windows via
   `keyring`, mémorisation de la clé d'hôte à la première connexion.
   Détection d'invite réutilisée sur le canal distant ; listing `ls`
@@ -96,12 +145,39 @@ L'environnement Python est dans `venv`. Utiliser
   répertoire courant récupéré en silence (`pwd`) juste après connexion ;
   statut « commande en cours » annoncé vocalement et porté dans le titre
   de la fenêtre (utile au retour d'un Alt+Tab, la barre de statut seule
-  n'étant pas lue automatiquement par NVDA).
-- **Palier 3, à faire** — exécutable final. L'outillage existe déjà
-  (`compiler.bat`, PyInstaller, embarque `nvdaControllerClient*.dll` s'il
-  est présent), mais n'a pas été revérifié depuis l'arrivée des
-  dépendances SSH (`paramiko`, `keyring`, `cryptography`) : à tester en
-  `--onefile` avant de considérer ce palier fait.
+  n'étant pas lue automatiquement par NVDA). Complété ensuite par : filtre
+  des séquences ANSI dans la sortie, maintien de connexion SSH
+  (keepalive, 30 s), transfert de fichiers SFTP (`ExecuteurSSH.envoyer_fichier`/
+  `recuperer_fichier`, menu Session), taille de police ajustable et
+  mémorisée (`settings.json`, ignoré par git), et le second canal JAWS
+  décrit plus haut.
+- **Palier 3, en cours** — exécutable final. Compilation testée avec les
+  dépendances SSH et JAWS (`paramiko`, `keyring`, `cryptography`,
+  `pywin32`) : l'exe se lance sans erreur, session locale et SSH
+  fonctionnelles. Bugs trouvés et corrigés au passage : le filtre de
+  dossiers à ignorer lors de la recherche de la DLL NVDA
+  (`Voix._candidats`) comparait des noms sur le chemin absolu, ce qui
+  excluait systématiquement tout fichier trouvé sous un dossier nommé
+  `dist` — exactement celui où vit l'exe compilé, donc la DLL n'était
+  jamais détectée même posée juste à côté de lui ; corrigé en comparant
+  sur le chemin relatif à `dossier_base()`. `compiler.bat` embarquait
+  la DLL via `--add-binary`, qui l'extrait dans un dossier temporaire à
+  chaque lancement (`sys._MEIPASS`) — jamais lu par l'appli, qui ne
+  cherche que dans le dossier de l'exe : remplacé par une copie de la DLL
+  à côté de `LazyShell.exe` après compilation. Et la persistance des
+  réglages (`Reglages`) n'écrivait que la taille de police dans
+  `settings.json` : le suivi de sortie, le listing amélioré, l'horodatage
+  et la verbosité revenaient à leur valeur par défaut à chaque
+  redémarrage, y compris depuis l'exe compilé ; généralisé en
+  `charger_reglages()`/`enregistrer_reglages()`, qui lisent et
+  réécrivent les cinq réglages ensemble. Passage ensuite de `--onefile`
+  à `--onedir` (voir décision ci-dessus) : `compiler.bat` produit
+  maintenant `dist\LazyShell\LazyShell.exe` avec un sous-dossier
+  `_internal`, plus de latence de désarchivage à chaque lancement.
+  Restent à vérifier au clavier avec NVDA : l'exe compilé en mode
+  dossier (pas seulement le venv), la persistance des quatre réglages
+  après un redémarrage, et idéalement JAWS si l'occasion se présente
+  enfin.
 
 ## Consignes de travail
 
