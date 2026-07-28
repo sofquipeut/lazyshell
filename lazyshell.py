@@ -1212,7 +1212,10 @@ class DialogueProfilSSH(wx.Dialog):
 
         self._activer_champs_cle()
 
-        boutons = self.CreateButtonSizer(wx.OK | wx.CANCEL)
+        boutons = wx.StdDialogButtonSizer()
+        boutons.AddButton(wx.Button(self, id=wx.ID_OK, label="&Enregistrer"))
+        boutons.AddButton(wx.Button(self, id=wx.ID_CANCEL, label="Ann&uler"))
+        boutons.Realize()
         self.Bind(wx.EVT_BUTTON, self._sur_ok, id=wx.ID_OK)
 
         grille = wx.FlexGridSizer(cols=2, gap=(8, 6))
@@ -1442,7 +1445,10 @@ class DialogueCommandeEnregistree(wx.Dialog):
         )
         self.champ_commande.SetMinSize((360, 80))
 
-        boutons = self.CreateButtonSizer(wx.OK | wx.CANCEL)
+        boutons = wx.StdDialogButtonSizer()
+        boutons.AddButton(wx.Button(self, id=wx.ID_OK, label="&Enregistrer"))
+        boutons.AddButton(wx.Button(self, id=wx.ID_CANCEL, label="Ann&uler"))
+        boutons.Realize()
         self.Bind(wx.EVT_BUTTON, self._sur_ok, id=wx.ID_OK)
 
         boite = wx.BoxSizer(wx.VERTICAL)
@@ -1718,7 +1724,7 @@ class Fenetre(wx.Frame):
                   m_nouvelle.Append(wx.ID_ANY, "Session &locale\tCtrl+T"))
         self.Bind(wx.EVT_MENU,
                   lambda e: self.nouvelle_session_ssh(),
-                  m_nouvelle.Append(wx.ID_ANY, "Session &SSH…\tCtrl+Shift+O"))
+                  m_nouvelle.Append(wx.ID_ANY, "Session &SSH…\tCtrl+Maj+O"))
         m_session.AppendSubMenu(m_nouvelle, "&Nouvelle session")
 
         self.Bind(wx.EVT_MENU,
@@ -1730,16 +1736,16 @@ class Fenetre(wx.Frame):
         m_session.AppendSeparator()
         self.Bind(wx.EVT_MENU,
                   lambda e: self.interrompre_commande(),
-                  m_session.Append(wx.ID_ANY, "&Interrompre la commande\tCtrl+Shift+K"))
+                  m_session.Append(wx.ID_ANY, "&Interrompre la commande\tCtrl+Maj+K"))
         self.Bind(wx.EVT_MENU,
                   lambda e: self.changer_repertoire(),
-                  m_session.Append(wx.ID_ANY, "Changer de &répertoire\tCtrl+Shift+D"))
+                  m_session.Append(wx.ID_ANY, "Changer de &répertoire\tCtrl+Maj+D"))
         self.Bind(wx.EVT_MENU,
                   lambda e: self.envoyer_fichier_ssh(),
-                  m_session.Append(wx.ID_ANY, "&Envoyer un fichier…\tCtrl+Shift+E"))
+                  m_session.Append(wx.ID_ANY, "&Envoyer un fichier…\tCtrl+Maj+E"))
         self.Bind(wx.EVT_MENU,
                   lambda e: self.recuperer_fichier_ssh(),
-                  m_session.Append(wx.ID_ANY, "&Récupérer un fichier…\tCtrl+Shift+T"))
+                  m_session.Append(wx.ID_ANY, "&Récupérer un fichier…\tCtrl+Maj+T"))
         m_session.AppendSeparator()
         self.Bind(wx.EVT_MENU,
                   lambda e: self.Close(),
@@ -1749,10 +1755,10 @@ class Fenetre(wx.Frame):
         m_commandes = wx.Menu()
         self.Bind(wx.EVT_MENU,
                   lambda e: self.utiliser_commande_enregistree(),
-                  m_commandes.Append(wx.ID_ANY, "&Utiliser une commande enregistrée…\tCtrl+Shift+J"))
+                  m_commandes.Append(wx.ID_ANY, "&Utiliser une commande enregistrée…\tCtrl+Maj+J"))
         self.Bind(wx.EVT_MENU,
                   lambda e: self.enregistrer_commande_actuelle(),
-                  m_commandes.Append(wx.ID_ANY, "Enregistrer la commande &actuelle…\tCtrl+Shift+M"))
+                  m_commandes.Append(wx.ID_ANY, "Enregistrer la commande &actuelle…\tCtrl+Maj+M"))
         self.Bind(wx.EVT_MENU,
                   lambda e: self.gerer_commandes_enregistrees(),
                   m_commandes.Append(wx.ID_ANY, "&Gérer les commandes enregistrées…"))
@@ -1761,20 +1767,20 @@ class Fenetre(wx.Frame):
         m_bloc = wx.Menu()
         self.Bind(wx.EVT_MENU,
                   lambda e: self.naviguer_bloc(-1),
-                  m_bloc.Append(wx.ID_ANY, "Bloc &précédent\tAlt+Up"))
+                  m_bloc.Append(wx.ID_ANY, "Bloc &précédent\tAlt+Haut"))
         self.Bind(wx.EVT_MENU,
                   lambda e: self.naviguer_bloc(1),
-                  m_bloc.Append(wx.ID_ANY, "Bloc &suivant\tAlt+Down"))
+                  m_bloc.Append(wx.ID_ANY, "Bloc &suivant\tAlt+Bas"))
         m_bloc.AppendSeparator()
         self.Bind(wx.EVT_MENU,
                   lambda e: self.copier_bloc(complet=True),
-                  m_bloc.Append(wx.ID_ANY, "&Copier le bloc courant\tCtrl+Shift+C"))
+                  m_bloc.Append(wx.ID_ANY, "&Copier le bloc courant\tCtrl+Maj+C"))
         self.Bind(wx.EVT_MENU,
                   lambda e: self.copier_bloc(complet=False),
-                  m_bloc.Append(wx.ID_ANY, "Copier la sortie &seule\tCtrl+Shift+S"))
+                  m_bloc.Append(wx.ID_ANY, "Copier la sortie &seule\tCtrl+Maj+S"))
         self.Bind(wx.EVT_MENU,
                   lambda e: self.copier_dernier_bloc(),
-                  m_bloc.Append(wx.ID_ANY, "Copier le &dernier bloc\tCtrl+Shift+L"))
+                  m_bloc.Append(wx.ID_ANY, "Copier le &dernier bloc\tCtrl+Maj+L"))
         m_bloc.AppendSeparator()
         self.Bind(wx.EVT_MENU,
                   lambda e: self.lister_blocs(),
@@ -1787,12 +1793,12 @@ class Fenetre(wx.Frame):
                   m_affichage.Append(wx.ID_ANY, "&Basculer saisie / sortie\tF6"))
         self.Bind(wx.EVT_MENU,
                   lambda e: self.repeter_saisie(),
-                  m_affichage.Append(wx.ID_ANY, "&Relire la saisie\tCtrl+Shift+R"))
+                  m_affichage.Append(wx.ID_ANY, "&Relire la saisie\tCtrl+Maj+R"))
         self.Bind(wx.EVT_MENU,
                   lambda e: self.changer_verbosite(),
-                  m_affichage.Append(wx.ID_ANY, "Niveau de &verbosité\tCtrl+Shift+V"))
+                  m_affichage.Append(wx.ID_ANY, "Niveau de &verbosité\tCtrl+Maj+V"))
         self.item_suivre = m_affichage.Append(
-            wx.ID_ANY, "Aller a&utomatiquement à la sortie\tCtrl+Shift+U",
+            wx.ID_ANY, "Aller a&utomatiquement à la sortie\tCtrl+Maj+U",
             "Après chaque commande, place le curseur sur l'en-tête du bloc",
             wx.ITEM_CHECK,
         )
@@ -1801,7 +1807,7 @@ class Fenetre(wx.Frame):
                   lambda e: self.basculer_suivi(),
                   self.item_suivre)
         self.item_listing = m_affichage.Append(
-            wx.ID_ANY, "Listing a&mélioré\tCtrl+Shift+N",
+            wx.ID_ANY, "Listing a&mélioré\tCtrl+Maj+N",
             "Place le nom du fichier en tête de ligne dans dir et ls",
             wx.ITEM_CHECK,
         )
@@ -1810,7 +1816,7 @@ class Fenetre(wx.Frame):
                   lambda e: self.basculer_listing(),
                   self.item_listing)
         self.item_horodatage = m_affichage.Append(
-            wx.ID_ANY, "Afficher l'&horodatage des blocs\tCtrl+Shift+H",
+            wx.ID_ANY, "Afficher l'&horodatage des blocs\tCtrl+Maj+H",
             "Ajoute l'heure dans la ligne d'en-tête de chaque bloc",
             wx.ITEM_CHECK,
         )
@@ -1820,10 +1826,16 @@ class Fenetre(wx.Frame):
                   self.item_horodatage)
 
         m_taille = wx.Menu()
+        self.items_taille_police = []
         for nom_preset, valeur in TAILLES_POLICE_PRESETS.items():
+            item = m_taille.Append(
+                wx.ID_ANY, f"{nom_preset} ({valeur})", "", wx.ITEM_CHECK,
+            )
+            self.items_taille_police.append((item, valeur))
             self.Bind(wx.EVT_MENU,
                       lambda e, v=valeur: self.definir_taille_police(v),
-                      m_taille.Append(wx.ID_ANY, f"{nom_preset} ({valeur})"))
+                      item)
+        self._synchroniser_taille_police()
         m_affichage.AppendSubMenu(m_taille, "&Taille de la police")
 
         self.Bind(wx.EVT_MENU,
@@ -2339,6 +2351,7 @@ class Fenetre(wx.Frame):
         self.reglages.taille_police = taille
         for index in range(self.carnet.GetPageCount()):
             self.carnet.GetPage(index).appliquer_taille_police()
+        self._synchroniser_taille_police()
         enregistrer_reglages(self.reglages)
         self.SetStatusText(f"Taille de police : {taille}")
         self.voix.dire(f"Taille de police {taille}.", interrompre=True)
@@ -2346,6 +2359,15 @@ class Fenetre(wx.Frame):
 
     def ajuster_taille_police(self, delta: int) -> None:
         self.definir_taille_police(self.reglages.taille_police + delta)
+
+    def _synchroniser_taille_police(self) -> None:
+        """Coche l'entrée du sous-menu correspondant à la taille active.
+
+        Aucune entrée n'est cochée si la taille courante (ajustée via
+        Ctrl+- ou Ctrl++) ne correspond à aucun des préréglages.
+        """
+        for item, valeur in self.items_taille_police:
+            item.Check(valeur == self.reglages.taille_police)
 
     def effacer_sortie(self):
         panneau = self.session()
@@ -2473,6 +2495,59 @@ class Fenetre(wx.Frame):
             # Fonctionne depuis les deux champs : dans la saisie, les flèches
             # nues servent a l'historique, Alt les libère pour les blocs.
             self.naviguer_bloc(-1 if code == wx.WXK_UP else 1)
+            return
+
+        # Raccourcis restants, repris ici plutôt que laissés à la seule
+        # table d'accélérateurs native de wx : celle-ci ne reconnaît que
+        # les noms de touches anglais ("Shift"), incompatible avec les
+        # libellés de menu en français ("Maj"). Regrouper la gestion ici
+        # permet aux libellés d'afficher "Maj" sans casser le raccourci.
+        if ctrl and not maj and code == ord("T"):
+            self.nouvelle_session()
+            return
+
+        if ctrl and maj and code == ord("O"):
+            self.nouvelle_session_ssh()
+            return
+
+        if ctrl and not maj and code == ord("W"):
+            self.fermer_session()
+            return
+
+        if ctrl and maj and code == ord("E"):
+            self.envoyer_fichier_ssh()
+            return
+
+        if ctrl and maj and code == ord("T"):
+            self.recuperer_fichier_ssh()
+            return
+
+        if ctrl and maj and code == ord("J"):
+            self.utiliser_commande_enregistree()
+            return
+
+        if ctrl and maj and code == ord("M"):
+            self.enregistrer_commande_actuelle()
+            return
+
+        if ctrl and maj and code == ord("C"):
+            self.copier_bloc(complet=True)
+            return
+
+        if ctrl and maj and code == ord("S"):
+            self.copier_bloc(complet=False)
+            return
+
+        if ctrl and maj and code == ord("L"):
+            self.copier_dernier_bloc()
+            return
+
+        if ctrl and not maj and code == ord("B"):
+            self.lister_blocs()
+            return
+
+        if ctrl and maj and code == ord("V"):
+            self.changer_verbosite()
             return
 
         evt.Skip()

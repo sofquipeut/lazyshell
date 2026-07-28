@@ -20,6 +20,19 @@ if "%NOM_DLL%"=="" (
 echo Comptez 1 a 3 minutes. Patientez.
 echo.
 
+rem PyInstaller supprime entierement dist\LazyShell avant de le
+rem reconstruire : sans cette sauvegarde, chaque recompilation effacerait
+rem les profils SSH, la cle d'hote memorisee, les commandes enregistrees
+rem et les reglages de l'utilisateur qui vivent dans ce meme dossier.
+set SAUVEGARDE=%TEMP%\lazyshell_sauvegarde_compilation
+if exist "%SAUVEGARDE%" rmdir /s /q "%SAUVEGARDE%"
+if exist "dist\LazyShell" (
+    mkdir "%SAUVEGARDE%" >nul
+    for %%F in (settings.json ssh_profiles.json known_hosts commands.json) do (
+        if exist "dist\LazyShell\%%F" copy /y "dist\LazyShell\%%F" "%SAUVEGARDE%\%%F" >nul
+    )
+)
+
 "venv\Scripts\python.exe" -m PyInstaller ^
   --noconfirm ^
   --windowed ^
@@ -37,6 +50,13 @@ rem bibliotheques Python dans le sous-dossier _internal. La DLL doit
 rem etre a cote de l'exe, jamais dans _internal : l'appli ne cherche que
 rem dans le dossier de l'exe (voir Voix._candidats).
 if not "%NOM_DLL%"=="" copy /y "%NOM_DLL%" "dist\LazyShell\%NOM_DLL%" >nul
+
+if exist "%SAUVEGARDE%" (
+    for %%F in (settings.json ssh_profiles.json known_hosts commands.json) do (
+        if exist "%SAUVEGARDE%\%%F" copy /y "%SAUVEGARDE%\%%F" "dist\LazyShell\%%F" >nul
+    )
+    rmdir /s /q "%SAUVEGARDE%"
+)
 
 echo.
 echo ============================================

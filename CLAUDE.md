@@ -110,6 +110,25 @@ confort ici : c'est le cahier des charges.**
   reste déplaçable tel quel (clé USB, autre machine) sans installation :
   la portabilité tient à `dossier_base()`, qui pointe toujours sur le
   dossier de l'exe, pas au fait que ce soit un fichier unique.
+- **Tous les raccourcis clavier sont interceptés à la main**
+  (`Fenetre.sur_touche_globale`, sur `wx.EVT_CHAR_HOOK`), jamais laissés
+  à la seule table d'accélérateurs native de wx construite depuis le
+  texte `"\tCtrl+Shift+X"` des libellés de menu. Deux raisons : wx
+  n'accepte que des noms de touches anglais dans ce texte (« Shift »,
+  pas « Maj »), incompatible avec des libellés en français ; et ça
+  rassemble toute la logique de raccourcis à un seul endroit, plus facile
+  à auditer que deux mécanismes qui pourraient un jour se contredire.
+  Les libellés de menu affichent donc « Ctrl+Maj+X » / « Alt+Haut » /
+  « Alt+Bas » sans que ça touche au fonctionnement réel de la touche.
+- **`compiler.bat` sauvegarde et restaure les fichiers de données**
+  (`settings.json`, `ssh_profiles.json`, `known_hosts`, `commands.json`)
+  autour de l'appel à PyInstaller. Nécessaire depuis le passage en
+  `--onedir` : PyInstaller supprime entièrement `dist\LazyShell` avant
+  de le reconstruire, donc sans cette sauvegarde chaque recompilation
+  effacerait silencieusement les profils SSH et les réglages de
+  l'utilisateur qui vivent dans ce même dossier. (Un jeu de données de
+  test a été perdu de cette façon pendant la mise au point de ce
+  correctif, avant qu'il n'existe — voir Palier 3.)
 
 ## Comment lancer et tester
 
@@ -173,11 +192,32 @@ L'environnement Python est dans `venv`. Utiliser
   réécrivent les cinq réglages ensemble. Passage ensuite de `--onefile`
   à `--onedir` (voir décision ci-dessus) : `compiler.bat` produit
   maintenant `dist\LazyShell\LazyShell.exe` avec un sous-dossier
-  `_internal`, plus de latence de désarchivage à chaque lancement.
-  Restent à vérifier au clavier avec NVDA : l'exe compilé en mode
-  dossier (pas seulement le venv), la persistance des quatre réglages
-  après un redémarrage, et idéalement JAWS si l'occasion se présente
-  enfin.
+  `_internal`, plus de latence de désarchivage à chaque lancement. Ce
+  changement a effacé sans prévenir le profil SSH, la clé d'hôte et les
+  commandes enregistrées qui vivaient dans l'ancien `dist\LazyShell`
+  (PyInstaller supprime tout le dossier de sortie à chaque
+  recompilation) ; `compiler.bat` sauvegarde et restaure désormais ces
+  fichiers autour de la compilation (voir décision ci-dessus), mais ce
+  jeu de données précis n'a pas pu être récupéré — à recréer à la main
+  (le mot de passe, lui, est resté dans le Gestionnaire d'identifiants
+  Windows, indépendant de ce dossier). Trois autres corrections dans la
+  foulée : le sous-menu de taille de police n'indiquait jamais la taille
+  active (aucune coche) ; les entrées sont passées en cases à cocher
+  synchronisées par `Fenetre._synchroniser_taille_police()`. Les boîtes
+  de dialogue « Profil SSH » et « Enregistrer une commande » utilisaient
+  `CreateButtonSizer(wx.OK | wx.CANCEL)`, qui affiche les libellés de
+  stock wx non traduits (« Cancel ») faute de catalogue de traduction
+  chargé ; remplacé par des `wx.Button` explicites (« Enregistrer » /
+  « Annuler »), sur le modèle déjà utilisé ailleurs dans le fichier. Et
+  tous les libellés de raccourcis clavier des menus affichaient
+  « Shift »/« Up »/« Down » en anglais ; voir la décision sur la gestion
+  manuelle des raccourcis ci-dessus. Restent à vérifier au clavier avec
+  NVDA : l'exe compilé en mode dossier (pas seulement le venv), la
+  persistance des quatre réglages après un redémarrage, la coche de
+  taille de police, les nouveaux libellés « Ctrl+Maj+X » / « Alt+Haut » /
+  « Alt+Bas » et leur fonctionnement réel au clavier, les boutons
+  « Enregistrer »/« Annuler », et idéalement JAWS si l'occasion se
+  présente enfin.
 
 ## Consignes de travail
 
