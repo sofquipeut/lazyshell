@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-LazyShell — palier 0
+LazyShell — terminal accessible pour Windows, pilotable entièrement au
+clavier et conçu pour NVDA (et un second canal d'annonce pour JAWS).
 
-Coquille complète de l'interface : fenêtre, onglets de session, champ de
-saisie, champ de sortie, modèle de blocs, navigation, copie et couche
-vocale NVDA.
-
-L'exécution réelle des commandes n'est PAS encore branchée : appuyer sur
-Entrée créé un bloc factice. L'objectif de ce palier est de valider
-l'ergonomie et l'accessibilité avant d'empiler quoi que ce soit dessus.
+Fenêtre à onglets de session (locale ou SSH), champ de saisie, champ de
+sortie découpé en blocs, historique, commandes enregistrées, transfert de
+fichiers SFTP, couche vocale.
 
 Les identifiants sont en français : une synthèse vocale française lit
 correctement « traiter_sortie » et massacre « handle_output ».
@@ -44,7 +41,7 @@ from ssh import (
 )
 
 APP_NOM = "LazyShell"
-VERSION = "0.3 (palier 2)"
+VERSION = "1.0.0"
 
 # Niveaux de verbosité de l'annonce vocale
 VERBOSITE_RESUME = 0
@@ -170,7 +167,7 @@ class Voix:
     JAWS (voir _charger_jaws).
 
     La DLL n'est PAS fournie avec NVDA : il faut la télécharger séparément
-    (voir LISEZMOI.md) et la déposer à côté de ce script, ou dans un
+    (voir README.md) et la déposer à côté de ce script, ou dans un
     sous-dossier « dll ». En son absence l'application fonctionne
     normalement, simplement sans annonce automatique.
     """
@@ -266,7 +263,7 @@ class Voix:
         logging.warning(
             "Aucun fichier nvdaControllerClient*.dll sous %s, à quelque "
             "profondeur que ce soit. L'application fonctionne, mais sans "
-            "annonce automatique. Voir LISEZMOI.md.", base,
+            "annonce automatique. Voir README.md.", base,
         )
 
     def _diagnostiquer(self) -> None:
@@ -630,7 +627,7 @@ def enregistrer_commandes(commandes: list[CommandeEnregistree]) -> None:
 # --------------------------------------------------------------------------
 
 MESSAGE_ACCUEIL = """\
-LazyShell, palier 2.
+Bienvenue dans LazyShell.
 
 Les commandes sont exécutées réellement, en local via PowerShell, ou à
 distance par SSH (menu Session → Nouvelle session). Aucune fenêtre de
@@ -869,7 +866,7 @@ class PanneauSession(wx.Panel):
         self.saisie.SetInsertionPointEnd()
         self.saisie.WriteText(chr(caractere))
 
-    # -- exécution (factice a ce palier) -----------------------------------
+    # -- exécution -----------------------------------------------------------
 
     def executer(self, commande: str) -> None:
         """Lance la commande dans un thread et rend la main aussitôt.

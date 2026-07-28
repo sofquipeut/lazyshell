@@ -7,8 +7,8 @@ fonctions de rappel, appelées depuis un thread de travail. C'est à
 l'appelant de les réacheminer vers le thread principal (wx.CallAfter).
 
 Deux raisons à cette séparation : le module reste testable sans
-interface, et le palier 2 (SSH) pourra fournir un second exécuteur
-respectant le même contrat, sans toucher au reste.
+interface, et ssh.py fournit un second exécuteur respectant le même
+contrat, sans toucher au reste.
 """
 
 from __future__ import annotations

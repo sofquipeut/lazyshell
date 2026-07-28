@@ -42,7 +42,7 @@ echo Interpreteur retenu : %PYEXE%
 echo.
 
 if exist "venv\Scripts\python.exe" goto venv_ok
-echo Etape 1 sur 5 : creation de l'environnement virtuel...
+echo Etape 1 sur 3 : creation de l'environnement virtuel...
 call :note "===== CREATION DU VENV ====="
 %PYEXE% -m venv venv >> "%JOURNAL%" 2>&1
 if errorlevel 1 goto echec
@@ -53,31 +53,16 @@ call :executer "venv\Scripts\python.exe" --version
 "venv\Scripts\python.exe" --version
 echo.
 
-echo Etape 2 sur 5 : mise a jour de pip...
+echo Etape 2 sur 3 : mise a jour de pip...
 call :note "===== PIP ====="
 "venv\Scripts\python.exe" -m pip install --upgrade pip >> "%JOURNAL%" 2>&1
 
-echo Etape 3 sur 5 : wxPython (le plus long, 2 a 4 minutes)...
-call :note "===== WXPYTHON ====="
-"venv\Scripts\python.exe" -m pip install wxPython >> "%JOURNAL%" 2>&1
+echo Etape 3 sur 3 : dependances du projet (requirements.txt,
+echo le plus long, 2 a 4 minutes, wxPython en particulier)...
+call :note "===== DEPENDANCES (requirements.txt) ====="
+"venv\Scripts\python.exe" -m pip install -r requirements.txt >> "%JOURNAL%" 2>&1
 if errorlevel 1 (
-    call :note "ECHEC sur wxPython"
-    goto echec
-)
-
-echo Etape 4 sur 5 : paramiko...
-call :note "===== PARAMIKO ====="
-"venv\Scripts\python.exe" -m pip install paramiko >> "%JOURNAL%" 2>&1
-if errorlevel 1 (
-    call :note "ECHEC sur paramiko"
-    goto echec
-)
-
-echo Etape 5 sur 5 : keyring et pyinstaller...
-call :note "===== KEYRING ET PYINSTALLER ====="
-"venv\Scripts\python.exe" -m pip install keyring pyinstaller >> "%JOURNAL%" 2>&1
-if errorlevel 1 (
-    call :note "ECHEC sur keyring ou pyinstaller"
+    call :note "ECHEC sur les dependances"
     goto echec
 )
 

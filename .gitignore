@@ -18,7 +18,7 @@ installation.log
 path_utilisateur_sauvegarde.txt
 
 # Client controleur NVDA : binaire externe, a recuperer chez NV Access
-# (voir LISEZMOI.md). On ne versionne pas les binaires tiers.
+# (voir README.md). On ne versionne pas les binaires tiers.
 nvdaControllerClient*.dll
 
 # Reglages locaux d'editeur

@@ -41,7 +41,7 @@ confort ici : c'est le cahier des charges.**
   `lazyshell.log` (ex `terminal.log`). Le nom de service utilisé dans le
   Gestionnaire d'identifiants Windows (`ssh.SERVICE_KEYRING`) est passé de
   `TerminalAccessible-SSH` à `LazyShell-SSH` ; le mot de passe déjà
-  mémorisé pour le profil `VPS Hostinger` a été recopié manuellement vers
+  mémorisé pour un profil de test existant a été recopié manuellement vers
   le nouveau nom de service au moment du renommage, l'ancien n'a pas été
   supprimé par précaution. Les identifiants et commentaires du code
   restent en français (règle inchangée, voir plus haut) : seul ce qui est
@@ -129,6 +129,22 @@ confort ici : c'est le cahier des charges.**
   l'utilisateur qui vivent dans ce même dossier. (Un jeu de données de
   test a été perdu de cette façon pendant la mise au point de ce
   correctif, avant qu'il n'existe — voir Palier 3.)
+- **Dépôt GitHub public, sous licence MIT (`LICENSE`).** Renommé de
+  `terminal-accessible` à `lazyshell` pour matcher le produit (GitHub
+  garde une redirection automatique sur l'ancienne URL). Avant bascule
+  en public : historique git entier vérifié (aucun secret, aucun fichier
+  de données personnelles n'a jamais été commité, même dans un vieux
+  commit — rien à réécrire) ; scripts de tooling propres à un poste de
+  développement assisté par Claude Code retirés du dépôt (`claude_ici.bat`,
+  tout `Outils/`, `publier.bat` devenu obsolète et risqué — commit
+  automatique sans revue de diff) ; mention d'un profil SSH réel
+  (« VPS Hostinger ») rendue générique dans ce fichier. `LISEZMOI.md`
+  renommé `README.md` : c'est le seul nom que GitHub rend automatiquement
+  comme page d'accueil du dépôt, sur le même principe que le passage à
+  l'anglais déjà fait pour `settings.json` — seul ce qui est visible de
+  l'extérieur change de nom, le contenu reste en français. Contenu
+  entièrement réécrit pour refléter l'état réel de l'appli (l'ancienne
+  version décrivait encore le Palier 0, exécution simulée).
 
 ## Comment lancer et tester
 
@@ -217,7 +233,9 @@ L'environnement Python est dans `venv`. Utiliser
   taille de police, les nouveaux libellés « Ctrl+Maj+X » / « Alt+Haut » /
   « Alt+Bas » et leur fonctionnement réel au clavier, les boutons
   « Enregistrer »/« Annuler », et idéalement JAWS si l'occasion se
-  présente enfin.
+  présente enfin. Version fixée à `1.0.0` et message d'accueil
+  (`MESSAGE_ACCUEIL`) nettoyé des mentions de palier pour la première
+  publication publique (voir décision sur le dépôt GitHub ci-dessus).
 
 ## Consignes de travail
 

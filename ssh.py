@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Exécution des commandes à distance, par SSH (palier 2).
+Exécution des commandes à distance, par SSH.
 
 Même contrat que execution.ExecuteurLocal.executer() : c'est ce qui
 permet à PanneauSession de piloter indifféremment une session locale ou
