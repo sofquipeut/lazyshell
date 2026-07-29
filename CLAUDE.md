@@ -69,7 +69,9 @@ confort ici : c'est le cahier des charges.**
   qui reste indépendant et déjà validé.
 - **Le statut passe toujours avant le contenu dans une annonce**, pour
   qu'on puisse couper la parole dès qu'on sait que la commande a réussi.
-- Règles de verbosité : sortie vide et code 0 donnent « Terminé » ; moins de
+- Règles de verbosité : sortie vide et code 0 donnent « Terminé, aucune
+  sortie » (un simple « Terminé » se confondait trop facilement avec un
+  silence de la synthèse ou une commande encore en cours) ; moins de
   10 lignes sont lues intégralement ; un code de retour non nul fait lire
   l'erreur en entier quel que soit le niveau réglé.
 - Pas de mot de passe en clair dans un fichier de configuration. Clés SSH,
@@ -236,6 +238,93 @@ L'environnement Python est dans `venv`. Utiliser
   présente enfin. Version fixée à `1.0.0` et message d'accueil
   (`MESSAGE_ACCUEIL`) nettoyé des mentions de palier pour la première
   publication publique (voir décision sur le dépôt GitHub ci-dessus).
+  Quatre changements ensuite : `MESSAGE_ACCUEIL` a été supprimé
+  entièrement (il ne s'affiche plus dans le champ de sortie au
+  démarrage d'une session) — son contenu (raccourcis clavier) vit
+  maintenant dans une documentation HTML dédiée, `docs\index.html`,
+  ouverte depuis le nouvel élément « Documentation » du menu Aide
+  (`Fenetre.ouvrir_documentation`, même principe que « Ouvrir le
+  journal ») ; `compiler.bat` copie ce dossier `docs` dans
+  `dist\LazyShell\docs`, donc il est déjà présent dans l'archive
+  distribuée. Le titre de la fenêtre (`PanneauSession.rafraichir_statut`)
+  affiche désormais aussi le répertoire courant de la session, en local
+  comme en SSH ; un changement de répertoire (dialogue Ctrl+Maj+D, ou le
+  `pwd` silencieux lancé à la connexion SSH) passe maintenant par
+  `PanneauSession.definir_repertoire`, qui rafraîchit le titre
+  immédiatement. Et le README a été corrigé : la section d'installation
+  simple indiquait de télécharger le client contrôleur NVDA à part, alors
+  que `compiler.bat` l'inclut déjà dans `dist\LazyShell` dès qu'il est
+  présent à la racine du dépôt au moment de la compilation — l'archive
+  publiée sur les Releases le contient donc déjà ; l'instruction de
+  récupérer la DLL a été déplacée dans la section « pour modifier le
+  code », seule où elle a un sens (avant de compiler soi-même). Restent à
+  vérifier au clavier avec NVDA : l'ouverture de `docs\index.html` depuis
+  le menu Aide (exe compilé, DLL et dossier `docs` bien copiés
+  ensemble), le nouveau contenu du titre en local et en SSH après un
+  changement de répertoire, et l'absence du message d'accueil au
+  démarrage d'une session.
+  Deux correctifs de plus, trouvés en creusant une commande SSH dont la
+  sortie était vide et le code de retour 143. Piste initiale (script
+  distant qui se tuait lui-même en boucle sur `/proc`) abandonnée :
+  l'explication la plus probable est plus simple, et pas un bug du
+  script — le processus tué par la commande (« gateway ») est le PID 1
+  du conteneur Docker ciblé ; le tuer arrête le conteneur, ce qui coupe
+  net la commande `docker exec` encore en cours (celle qui fait le tri
+  dans `/proc` et devait afficher le message final), avec ce même 143
+  en retour. Un kill réussi, donc, pas un échec — 143 = 128 + SIGTERM
+  (15), le signal qu'envoie `kill` sans option : c'est la trace normale
+  d'un arrêt demandé de l'extérieur, pas forcément celle d'un échec
+  applicatif. Voir la nouvelle fonction `libelle_signal` ci-dessous.
+  `Bloc.texte_complet()` (`lazyshell.py`, ce que Ctrl+Maj+C
+  et Ctrl+Maj+L placent dans le presse-papiers) ne portait jamais le code
+  de retour ni l'état « interrompue » — une commande en échec sans
+  sortie se copiait comme un succès silencieux, l'info la plus utile
+  disparaissait au collage ; elle inclut maintenant `[code de retour :
+  N]` ou `[interrompue]` quand ce n'est pas un succès, rien sinon (même
+  philosophie de silence sur succès que `entete()`). Et `Bloc.rendu()`
+  n'affiche plus « Commande complète » pour une commande longue mais sur
+  une seule ligne (seuil `LONGUEUR_COMMANDE_ENTETE`, 60 caractères) —
+  seule une commande réellement multiligne y perd de l'info réelle en
+  entête (les retours à la ligne repliés en « ; ») ; répéter un long
+  one-liner juste après son en-tête tronqué ne faisait que doubler la
+  lecture avant d'atteindre la sortie, sans rien apporter que Ctrl+Maj+C
+  ne donne déjà. Enfin, `composer_annonce` (`lazyshell.py`) annonce
+  maintenant « Terminé, aucune sortie » plutôt qu'un simple « Terminé »
+  sur une commande réussie sans sortie — trop facile à confondre avec un
+  silence de la synthèse ou une commande encore en cours ; voir règle de
+  verbosité mise à jour plus haut.
+  Et directement lié au 143 ci-dessus : jusque-là, tout code de retour
+  non nul était systématiquement annoncé comme une « erreur », y compris
+  quand il s'agit en fait d'un arrêt par signal (128 + numéro du signal),
+  qui ne dit rien en soi sur un succès ou un échec. Nouvelle fonction
+  `libelle_signal(code_retour)` (`lazyshell.py`, juste avant `class
+  Bloc`) : reconnaît cette plage (129 à 159) et renvoie `"signal N, NOM"`
+  (table `NOMS_SIGNAUX`, les 31 signaux POSIX standards) au lieu de
+  `None` pour un vrai code d'erreur applicatif (1 à 127), laissé tel
+  quel. Branché aux quatre endroits qui répétaient chacun leur propre
+  formatage « erreur N » : `Bloc.entete()` (ligne lue par NVDA à la
+  navigation), `composer_annonce()` (annonce vocale automatique en fin
+  de commande, devient « Terminée, signal 15, SIGTERM, ... » au lieu
+  d'« Erreur, code 143, ... »), le statut braille posé dans
+  `PanneauSession.ajouter_bloc()` juste après la commande (celui lu en
+  premier après une exécution — c'est lui qui affichait encore « erreur
+  143 » avant ce correctif), `Bloc.texte_complet()` (presse-papiers) et
+  `Bloc.libelle_liste()` (Ctrl+B). Ne cherche pas à deviner si un signal
+  donné était voulu ou non : il nomme juste le signal, à l'utilisateur
+  de juger — un futur signal hors de la plage 1-31 (temps réel, rare
+  ici) retombe sur « erreur N » plutôt que d'inventer un nom.
+  Remarqué juste après, sur ce même « Terminé, aucune sortie » entendu
+  en vocal : le braille affichait encore « ok, 0 lignes » à la place —
+  deux formulations différentes pour le même résultat, posées par deux
+  bouts de code séparés dans `ajouter_bloc()` (l'annonce vocale passait
+  par `composer_annonce()`, le braille par un résumé compact construit à
+  la main, jamais les deux mêmes mots). Le braille reprend maintenant
+  l'annonce vocale telle quelle quand elle tient dans `Voix.LIMITE_BRAILLE`
+  (120 caractères) ; le résumé compact (« Bloc N, statut, X lignes ») ne
+  sert plus que de repli pour une sortie assez longue pour ne pas tenir
+  dans cette limite — même règle que `Voix.dire()` applique déjà
+  ailleurs pour ne pas perdre le message en braille en dépassant la
+  limite de l'afficheur.
 
 ## Consignes de travail
 

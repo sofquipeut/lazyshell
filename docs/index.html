@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>LazyShell — Documentation</title>
+<style>
+  body {
+    font-family: sans-serif;
+    max-width: 50em;
+    margin: 2em auto;
+    padding: 0 1em;
+    line-height: 1.5;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-bottom: 1.5em;
+  }
+  th, td {
+    border: 1px solid #888;
+    padding: 0.4em 0.6em;
+    text-align: left;
+  }
+  th {
+    background: #eee;
+  }
+  code {
+    background: #eee;
+    padding: 0.1em 0.3em;
+  }
+  nav ul {
+    padding-left: 1.2em;
+  }
+</style>
+</head>
+<body>
+
+<h1>LazyShell — Documentation</h1>
+
+<p>Terminal accessible pour Windows, pilotable entièrement au clavier et
+conçu pour NVDA (avec un second canal d'annonce pour JAWS). Il exécute des
+commandes en local (PowerShell) et à distance par SSH, sans jamais ouvrir
+de fenêtre de console.</p>
+
+<nav aria-label="Sommaire">
+<ul>
+  <li><a href="#fonctionnement">Fonctionnement général</a></li>
+  <li><a href="#raccourcis">Raccourcis clavier</a></li>
+  <li><a href="#limites">Limites connues</a></li>
+  <li><a href="#journal">Le journal</a></li>
+</ul>
+</nav>
+
+<h2 id="fonctionnement">Fonctionnement général</h2>
+
+<p>Les commandes sont exécutées réellement, une à la fois : pas de
+terminal interactif plein écran. Chaque commande envoyée produit un
+bloc (la commande, sa sortie, son code de retour, son horodatage
+optionnel), navigable et copiable indépendamment des autres.</p>
+
+<p>Si une commande semble attendre une saisie (mot de passe,
+confirmation), une boîte de dialogue accessible s'ouvre automatiquement
+pour y répondre.</p>
+
+<p>Le titre de la fenêtre indique en permanence la session active, son
+répertoire de travail courant (local ou distant), et si une commande est
+en train de s'exécuter : utile après un Alt+Tab ou un changement
+d'onglet, puisque c'est ce que NVDA annonce au retour du focus.</p>
+
+<p>Une session locale ou distante (SSH) s'ouvre depuis le menu Session.
+Le nom de la session figure dans le nom accessible des champs de saisie
+et de sortie, pour éviter de taper une commande dans la mauvaise
+session.</p>
+
+<h2 id="raccourcis">Raccourcis clavier</h2>
+
+<p>Tout est également accessible depuis la barre de menus.</p>
+
+<h3>Général</h3>
+<table>
+<tr><th scope="col">Touche</th><th scope="col">Action</th></tr>
+<tr><td>Entrée</td><td>Envoyer la commande</td></tr>
+<tr><td>Maj+Entrée</td><td>Saut de ligne dans la saisie (commande multiligne)</td></tr>
+<tr><td>F6</td><td>Basculer entre saisie et sortie</td></tr>
+<tr><td>Échap</td><td>Revenir au champ de saisie</td></tr>
+<tr><td>Flèche haut / bas</td><td>Historique des commandes (dans la saisie)</td></tr>
+<tr><td>Ctrl+Maj+K (ou Ctrl+Pause)</td><td>Interrompre la commande en cours</td></tr>
+<tr><td>Ctrl+= / Ctrl+-</td><td>Agrandir / réduire la police</td></tr>
+</table>
+
+<h3>Session</h3>
+<table>
+<tr><th scope="col">Touche</th><th scope="col">Action</th></tr>
+<tr><td>Ctrl+T</td><td>Nouvelle session locale</td></tr>
+<tr><td>Ctrl+Maj+O</td><td>Nouvelle session SSH</td></tr>
+<tr><td>Ctrl+W</td><td>Fermer la session</td></tr>
+<tr><td>Ctrl+Tab / Ctrl+Maj+Tab</td><td>Session suivante / précédente</td></tr>
+<tr><td>Ctrl+1 à Ctrl+9</td><td>Aller directement à une session</td></tr>
+<tr><td>Ctrl+Maj+D</td><td>Changer de répertoire courant</td></tr>
+<tr><td>Ctrl+Maj+E</td><td>Envoyer un fichier (session SSH)</td></tr>
+<tr><td>Ctrl+Maj+T</td><td>Récupérer un fichier (session SSH)</td></tr>
+</table>
+
+<h3>Commandes enregistrées</h3>
+<table>
+<tr><th scope="col">Touche</th><th scope="col">Action</th></tr>
+<tr><td>Ctrl+Maj+J</td><td>Utiliser une commande enregistrée</td></tr>
+<tr><td>Ctrl+Maj+M</td><td>Enregistrer la commande actuelle</td></tr>
+</table>
+
+<h3>Blocs de sortie</h3>
+<table>
+<tr><th scope="col">Touche</th><th scope="col">Action</th></tr>
+<tr><td>Alt+Haut / Alt+Bas</td><td>Bloc précédent / suivant</td></tr>
+<tr><td>Ctrl+Maj+C</td><td>Copier le bloc courant (commande et sortie)</td></tr>
+<tr><td>Ctrl+Maj+S</td><td>Copier la sortie seule du bloc courant</td></tr>
+<tr><td>Ctrl+Maj+L</td><td>Copier le dernier bloc</td></tr>
+<tr><td>Ctrl+B</td><td>Liste des blocs</td></tr>
+</table>
+
+<h3>Affichage</h3>
+<table>
+<tr><th scope="col">Touche</th><th scope="col">Action</th></tr>
+<tr><td>Ctrl+Maj+R</td><td>Relire la saisie en cours</td></tr>
+<tr><td>Ctrl+Maj+V</td><td>Changer le niveau de verbosité vocale</td></tr>
+<tr><td>Ctrl+Maj+U</td><td>Aller automatiquement à la sortie après chaque commande</td></tr>
+<tr><td>Ctrl+Maj+N</td><td>Listing amélioré (nom de fichier en tête de ligne)</td></tr>
+<tr><td>Ctrl+Maj+H</td><td>Afficher ou masquer l'horodatage des blocs</td></tr>
+</table>
+
+<h2 id="limites">Limites connues</h2>
+
+<ul>
+<li>SSH fonctionne sans pseudo-terminal (<code>get_pty=False</code>) :
+stdout et stderr restent séparés, comme en local. Conséquence acceptée :
+une invite purement interactive côté shell distant (par exemple
+<code>read -p</code> de bash, qui n'écrit rien du tout hors mode
+interactif) n'écrit rien de détectable ; seule l'interruption manuelle
+(Ctrl+Maj+K) s'applique alors. Même limite que <code>Read-Host</code>
+bloqué en local par <code>-NonInteractive</code>.</li>
+<li>Le canal d'annonce JAWS n'a jamais été vérifié avec un JAWS réel :
+l'identifiant COM et les noms de méthode utilisés viennent des
+références les plus courantes sur l'automatisation JAWS, pas d'une
+confirmation. Le canal NVDA, lui, est indépendant et validé.</li>
+</ul>
+
+<h2 id="journal">Le journal</h2>
+
+<p>Tout est consigné dans <code>lazyshell.log</code>, à côté de
+l'exécutable (ou du script) : démarrage, sessions ouvertes, commandes,
+erreurs, et la trace complète de toute exception. Le menu Aide propose
+« Ouvrir le journal ». En cas de problème, copier les vingt dernières
+lignes suffit généralement à identifier la cause.</p>
+
+</body>
+</html>

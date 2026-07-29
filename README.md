@@ -33,20 +33,18 @@ L'accessibilité n'est pas une option ici, c'est le cahier des charges.
 1. Télécharger la dernière version compilée depuis la page
    [Releases](../../releases) de ce dépôt et décompresser l'archive
    n'importe où (une clé USB convient : rien ne s'installe dans le
-   système). Le dossier obtenu contient `LazyShell.exe` et un sous-dossier
-   `_internal` : les deux doivent rester ensemble.
-2. Pour l'annonce vocale automatique via NVDA, récupérer le **client
-   contrôleur NVDA** (non fourni avec NVDA lui-même) : archive
-   `…controllerClient.zip` publiée par NV Access sur
-   `download.nvaccess.org`, ou documentation dans `extras/controllerClient`
-   du dépôt GitHub de NVDA. Déposer le fichier du dossier **x64**
-   (`nvdaControllerClient64.dll` ou `nvdaControllerClient.dll` selon la
-   version) à côté de `LazyShell.exe`.
-3. Lancer `LazyShell.exe`.
+   système). Le dossier obtenu contient `LazyShell.exe`, un sous-dossier
+   `_internal` (les deux doivent rester ensemble) et un sous-dossier
+   `docs` (documentation HTML, aussi accessible depuis le menu Aide de
+   l'appli une fois lancée).
+2. Lancer `LazyShell.exe`.
 
-Sans cette DLL, l'application démarre et fonctionne normalement : seule
-l'annonce automatique est inactive, et le journal (`lazyshell.log`, à côté
-de l'exe) l'indique clairement au démarrage.
+Le **client contrôleur NVDA**, nécessaire à l'annonce vocale automatique
+via NVDA, est déjà inclus dans l'archive : rien à récupérer séparément.
+S'il venait à manquer (compilation locale sans la DLL, voir plus bas),
+l'application démarre et fonctionne normalement : seule l'annonce
+automatique est inactive, et le journal (`lazyshell.log`, à côté de
+l'exe) l'indique clairement au démarrage.
 
 Le canal JAWS, lui, est actif automatiquement si JAWS est installé et en
 cours d'exécution — aucun fichier à récupérer. Sa fiabilité n'a toutefois
@@ -65,7 +63,15 @@ Nécessite Python 3.11 ou 3.12.
 4. `compiler.bat` — produit l'application compilée dans `dist\LazyShell`
    (via PyInstaller, mode dossier). C'est ce dossier complet qu'il faut
    distribuer, jamais `LazyShell.exe` seul : il a besoin du sous-dossier
-   `_internal` à côté de lui.
+   `_internal` à côté de lui. Le sous-dossier `docs` du dépôt y est copié
+   automatiquement. Pour que l'annonce vocale automatique fonctionne dans
+   l'exécutable produit, déposer au préalable le **client contrôleur
+   NVDA** (non fourni avec NVDA lui-même — archive `…controllerClient.zip`
+   publiée par NV Access sur `download.nvaccess.org`, fichier du dossier
+   **x64**) à la racine du dépôt, sous le nom `nvdaControllerClient64.dll`
+   ou `nvdaControllerClient.dll` : `compiler.bat` le détecte et le copie
+   à côté de `LazyShell.exe`. Sans lui, l'exécutable fonctionne quand même,
+   simplement sans annonce automatique.
 
 ## Raccourcis clavier
 

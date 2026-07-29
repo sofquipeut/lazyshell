@@ -51,6 +51,11 @@ rem etre a cote de l'exe, jamais dans _internal : l'appli ne cherche que
 rem dans le dossier de l'exe (voir Voix._candidats).
 if not "%NOM_DLL%"=="" copy /y "%NOM_DLL%" "dist\LazyShell\%NOM_DLL%" >nul
 
+rem Documentation HTML (docs\index.html), lue depuis le menu Aide de
+rem l'appli (Fenetre.ouvrir_documentation) : doit vivre a cote de l'exe,
+rem comme la DLL, pour etre presente dans l'archive telechargee.
+if exist "docs" xcopy "docs" "dist\LazyShell\docs" /e /i /y >nul
+
 if exist "%SAUVEGARDE%" (
     for %%F in (settings.json ssh_profiles.json known_hosts commands.json) do (
         if exist "%SAUVEGARDE%\%%F" copy /y "%SAUVEGARDE%\%%F" "dist\LazyShell\%%F" >nul

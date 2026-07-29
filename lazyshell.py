@@ -41,7 +41,7 @@ from ssh import (
 )
 
 APP_NOM = "LazyShell"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # Niveaux de verbosité de l'annonce vocale
 VERBOSITE_RESUME = 0
@@ -409,6 +409,39 @@ def bip(succes: bool) -> None:
 # Modèle de blocs
 # --------------------------------------------------------------------------
 
+# Signaux POSIX standards (1-31), pour reconnaître un code de retour de la
+# forme 128 + numéro du signal — la convention par laquelle un shell
+# distant signale qu'un processus a été tué plutôt que d'avoir échoué de
+# lui-même. kill sans option envoie SIGTERM (15), d'où le 143 courant.
+NOMS_SIGNAUX = {
+    1: "SIGHUP", 2: "SIGINT", 3: "SIGQUIT", 4: "SIGILL", 5: "SIGTRAP",
+    6: "SIGABRT", 7: "SIGBUS", 8: "SIGFPE", 9: "SIGKILL", 10: "SIGUSR1",
+    11: "SIGSEGV", 12: "SIGUSR2", 13: "SIGPIPE", 14: "SIGALRM", 15: "SIGTERM",
+    16: "SIGSTKFLT", 17: "SIGCHLD", 18: "SIGCONT", 19: "SIGSTOP", 20: "SIGTSTP",
+    21: "SIGTTIN", 22: "SIGTTOU", 23: "SIGURG", 24: "SIGXCPU", 25: "SIGXFSZ",
+    26: "SIGVTALRM", 27: "SIGPROF", 28: "SIGWINCH", 29: "SIGIO", 30: "SIGPWR",
+    31: "SIGSYS",
+}
+
+
+def libelle_signal(code_retour: int) -> str | None:
+    """Décrit un code de retour comme un arrêt par signal, si c'est le cas.
+
+    Renvoie None hors de cette plage : on n'invente pas un signal pour un
+    vrai code d'erreur applicatif (1 à 127), qui reste annoncé comme une
+    erreur. Un code 128 + N n'est PAS forcément un échec — c'est aussi la
+    trace normale d'un arrêt demandé depuis l'extérieur : un kill explicite
+    d'un autre processus par la commande elle-même, un conteneur arrêté
+    proprement... On ne tranche donc pas à la place de l'utilisateur, on
+    nomme juste ce qui s'est passé au lieu de crier « erreur » à tort.
+    """
+    numero = code_retour - 128
+    if not 0 < numero <= 31:
+        return None
+    nom = NOMS_SIGNAUX.get(numero)
+    return f"signal {numero}, {nom}" if nom else f"signal {numero}"
+
+
 @dataclass
 class Bloc:
     numero: int
@@ -453,7 +486,7 @@ class Bloc:
         if self.interrompue:
             morceaux.append("interrompue")
         elif self.code_retour != 0:
-            morceaux.append(f"erreur {self.code_retour}")
+            morceaux.append(libelle_signal(self.code_retour) or f"erreur {self.code_retour}")
 
         n = self.nb_lignes
         morceaux.append(decompte(n))
@@ -465,8 +498,12 @@ class Bloc:
         """Texte inséré dans le champ de sortie. Aucun caractère décoratif :
         une ligne de tirets est illisible en vocal comme en braille."""
         morceaux = [self.entete(avec_heure)]
-        multiligne = "\n" in self.commande.strip()
-        if multiligne or len(self.commande) > LONGUEUR_COMMANDE_ENTETE:
+        # Seule une commande multiligne perd de l'information réelle en
+        # entête (les retours à la ligne, repliés en « ; »). Une commande
+        # longue mais sur une seule ligne n'y perd rien de structurel :
+        # la répéter en entier ici ne ferait que doubler ce qui vient
+        # d'être dit, avant même d'atteindre la sortie.
+        if "\n" in self.commande.strip():
             morceaux.append(f"Commande complète :\n{self.commande}")
         if self.sortie:
             morceaux.append(self.sortie.rstrip("\n"))
@@ -474,12 +511,30 @@ class Bloc:
         return "\n".join(morceaux) + "\n"
 
     def texte_complet(self) -> str:
-        """Ce que Ctrl+Maj+C place dans le presse-papiers."""
-        return f"{self.commande}\n{self.sortie}".rstrip() + "\n"
+        """Ce que Ctrl+Maj+C (et Ctrl+Maj+L) placent dans le presse-papiers.
+
+        Le code de retour n'y figurait jamais : une commande en échec sans
+        rien écrire en sortie (interrompue avant d'avoir produit quoi que
+        ce soit, par exemple) se copiait comme si elle avait réussi en
+        silence — l'information la plus utile disparaissait au collage.
+        """
+        morceaux = [self.commande]
+        if self.interrompue:
+            morceaux.append("[interrompue]")
+        elif self.code_retour != 0:
+            signal = libelle_signal(self.code_retour)
+            statut = signal if signal else f"code de retour : {self.code_retour}"
+            morceaux.append(f"[{statut}]")
+        if self.sortie:
+            morceaux.append(self.sortie)
+        return "\n".join(morceaux).rstrip() + "\n"
 
     def libelle_liste(self) -> str:
         heure = self.horodatage.strftime("%H:%M:%S")
-        etat = "ok" if self.code_retour == 0 else f"erreur {self.code_retour}"
+        if self.code_retour == 0:
+            etat = "ok"
+        else:
+            etat = libelle_signal(self.code_retour) or f"erreur {self.code_retour}"
         commande = " ; ".join(
             ligne.strip() for ligne in self.commande.splitlines() if ligne.strip()
         )
@@ -517,7 +572,11 @@ def composer_annonce(bloc: Bloc, verbosite: int) -> str:
         return f"Interrompue après {bloc.duree:.0f} secondes."
 
     if bloc.code_retour != 0:
-        tete = f"Erreur, code {bloc.code_retour}, {decompte(nb)}."
+        signal = libelle_signal(bloc.code_retour)
+        if signal:
+            tete = f"Terminée, {signal}, {decompte(nb)}."
+        else:
+            tete = f"Erreur, code {bloc.code_retour}, {decompte(nb)}."
         if not lignes:
             return tete
         extrait = lignes[:LIGNES_ERREUR]
@@ -528,8 +587,13 @@ def composer_annonce(bloc: Bloc, verbosite: int) -> str:
     # va bien » — instantanément, et sans occuper la parole. Répéter
     # « Terminé, N lignes » avant chaque sortie ne fait que retarder
     # l'information utile. On entre donc directement dans le contenu.
+    #
+    # Absence de sortie mise à part : là, il n'y a pas de contenu à
+    # enchaîner derrière un « Terminé » sec, qui se confond facilement
+    # avec un silence de la synthèse ou une commande encore en cours. Le
+    # dire explicitement lève l'ambiguïté.
     if nb == 0:
-        return "Terminé."
+        return "Terminé, aucune sortie."
 
     if nb <= SEUIL_LECTURE_INTEGRALE or verbosite == VERBOSITE_TOUT:
         return " ".join(lignes)
@@ -626,50 +690,6 @@ def enregistrer_commandes(commandes: list[CommandeEnregistree]) -> None:
 # Panneau d'une session
 # --------------------------------------------------------------------------
 
-MESSAGE_ACCUEIL = """\
-Bienvenue dans LazyShell.
-
-Les commandes sont exécutées réellement, en local via PowerShell, ou à
-distance par SSH (menu Session → Nouvelle session). Aucune fenêtre de
-console n'apparaît.
-
-Si une commande semble attendre une saisie (mot de passe, confirmation),
-une boîte de dialogue accessible s'ouvre automatiquement pour y répondre.
-
-Raccourcis :
-  Entrée              envoyer la commande
-  Maj+Entrée          saut de ligne dans la saisie (commande multiligne)
-  Ctrl+Maj+K          interrompre la commande en cours
-  Ctrl+Pause          idem, si cette touche existe sur ton clavier
-  F6                  basculer entre saisie et sortie
-  Échap               revenir au champ de saisie
-  Flèche haut / bas   historique des commandes, quand le curseur est
-                      sur la première ou la dernière ligne de la saisie
-  Alt+Haut / Alt+Bas  bloc précédent / suivant
-  Ctrl+Maj+C          copier le bloc courant
-  Ctrl+Maj+S          copier la sortie seule du bloc courant
-  Ctrl+Maj+L          copier le dernier bloc
-  Ctrl+B              liste des blocs
-  Ctrl+Maj+V          changer le niveau de verbosité vocale
-  Ctrl+Maj+H          afficher ou masquer l'horodatage des blocs
-  Ctrl+Maj+D          changer de répertoire courant
-  Ctrl+Maj+E          envoyer un fichier (session SSH)
-  Ctrl+Maj+T          récupérer un fichier (session SSH)
-  Ctrl+Maj+N          listing amélioré (nom en tête de ligne)
-  Ctrl+Maj+R          relire la saisie en cours
-  Ctrl+Maj+U          aller automatiquement à la sortie après chaque commande
-  Ctrl+Maj+J          utiliser une commande enregistrée
-  Ctrl+Maj+M          enregistrer la commande actuelle
-  Ctrl+=              agrandir la police
-  Ctrl+-              réduire la police
-  Ctrl+T              nouvelle session
-  Ctrl+Maj+O          nouvelle session SSH
-  Ctrl+Tab            session suivante
-  Ctrl+1 à Ctrl+9     aller directement à une session
-
-Tout est également accessible depuis la barre de menus.
-"""
-
 
 class PanneauSession(wx.Panel):
     """Une session = un onglet = un champ de saisie, un champ de sortie,
@@ -716,8 +736,6 @@ class PanneauSession(wx.Panel):
             style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2 | wx.TE_DONTWRAP,
         )
         self.sortie.SetName(f"Sortie, {nom}")
-        self.sortie.SetValue(MESSAGE_ACCUEIL)
-        self.sortie.SetInsertionPoint(0)
         self.appliquer_taille_police()
 
         boite = wx.BoxSizer(wx.VERTICAL)
@@ -900,6 +918,13 @@ class PanneauSession(wx.Panel):
 
         threading.Thread(target=travailler, daemon=True).start()
 
+    def definir_repertoire(self, repertoire: str) -> None:
+        """Change le répertoire courant et rafraîchit le titre aussitôt,
+        que ce soit depuis le dialogue Ctrl+Maj+D ou depuis le pwd
+        silencieux lancé à la connexion d'une session SSH."""
+        self.repertoire = repertoire
+        self.rafraichir_statut()
+
     def rafraichir_statut(self) -> None:
         """Reflète l'état de CETTE session dans la barre de statut et le
         titre de la fenêtre.
@@ -909,20 +934,27 @@ class PanneauSession(wx.Panel):
         lit au retour d'un Alt+Tab. Le titre, lui, est ce que Windows et
         NVDA annoncent quand la fenêtre reprend le focus : c'est donc lui
         qui porte l'information « une commande tourne encore », pas de
-        caractère décoratif, juste du texte.
+        caractère décoratif, juste du texte. Le répertoire courant y
+        figure aussi (local ou distant) : sans lui, on perd le fil de
+        l'endroit où on se trouve après un Alt+Tab ou un changement
+        d'onglet, en local comme en SSH.
         """
         fenetre = self.GetTopLevelParent()
         if fenetre.session() is not self:
             return
+        nom = f"{self.nom} (commande en cours)" if self.en_cours else self.nom
+        segments = [nom]
+        if self.repertoire:
+            segments.append(self.repertoire)
+        segments.append(APP_NOM)
+        fenetre.SetTitle(" — ".join(segments))
         if self.en_cours:
             resume = self._commande_en_cours.splitlines()[0].strip()
             if len(resume) > 60:
                 resume = resume[:60].rstrip() + "..."
             fenetre.SetStatusText(f"Commande en cours : {resume}")
-            fenetre.SetTitle(f"{self.nom} (commande en cours) — {APP_NOM}")
         else:
             fenetre.SetStatusText("Prêt")
-            fenetre.SetTitle(f"{self.nom} — {APP_NOM}")
 
     def _signaler_lenteur(self) -> None:
         """Appelée depuis le thread de travail via CallAfter.
@@ -1038,12 +1070,18 @@ class PanneauSession(wx.Panel):
         elif code_retour == 0:
             statut = "ok"
         else:
-            statut = f"erreur {code_retour}"
-        self.voix.dire(
-            composer_annonce(bloc, self.reglages.verbosite),
-            braille=f"Bloc {bloc.numero}, {statut}, {decompte(bloc.nb_lignes)}",
-            interrompre=True,
-        )
+            statut = libelle_signal(code_retour) or f"erreur {code_retour}"
+        annonce = composer_annonce(bloc, self.reglages.verbosite)
+        # Le braille reprend l'annonce vocale telle quelle quand elle
+        # tient dans la limite : sans ça, un « Terminé, aucune sortie »
+        # entendu se voyait réduit à « ok, 0 lignes » en braille, deux
+        # formulations différentes pour la même chose. Seule une annonce
+        # trop longue (sortie lue en entier) retombe sur le résumé
+        # compact, pour ne pas dépasser LIMITE_BRAILLE et perdre le
+        # message en braille aussi (voir Voix.dire).
+        resume = f"Bloc {bloc.numero}, {statut}, {decompte(bloc.nb_lignes)}"
+        braille = annonce if len(annonce) <= Voix.LIMITE_BRAILLE else resume
+        self.voix.dire(annonce, braille=braille, interrompre=True)
         return bloc
 
     @property
@@ -1845,6 +1883,9 @@ class Fenetre(wx.Frame):
 
         m_aide = wx.Menu()
         self.Bind(wx.EVT_MENU,
+                  lambda e: self.ouvrir_documentation(),
+                  m_aide.Append(wx.ID_ANY, "&Documentation"))
+        self.Bind(wx.EVT_MENU,
                   lambda e: self.ouvrir_journal(),
                   m_aide.Append(wx.ID_ANY, "Ouvrir le &journal"))
         self.Bind(wx.EVT_MENU,
@@ -2044,7 +2085,7 @@ class Fenetre(wx.Frame):
             resultat = executeur.executer("pwd", listing_lisible=False)
             chemin = resultat.sortie.strip()
             if resultat.code_retour == 0 and chemin:
-                wx.CallAfter(setattr, panneau, "repertoire", chemin)
+                wx.CallAfter(panneau.definir_repertoire, chemin)
 
         threading.Thread(target=recuperer_repertoire, daemon=True).start()
 
@@ -2174,7 +2215,7 @@ class Fenetre(wx.Frame):
             ) as boite:
                 if boite.ShowModal() != wx.ID_OK:
                     return
-                panneau.repertoire = boite.GetValue().strip()
+                panneau.definir_repertoire(boite.GetValue().strip())
         else:
             with wx.DirDialog(
                 self, "Choisissez le répertoire de travail",
@@ -2183,7 +2224,7 @@ class Fenetre(wx.Frame):
             ) as boite:
                 if boite.ShowModal() != wx.ID_OK:
                     return
-                panneau.repertoire = boite.GetPath()
+                panneau.definir_repertoire(boite.GetPath())
         self.SetStatusText(f"Répertoire : {panneau.repertoire}")
         self.voix.dire(f"Répertoire : {panneau.repertoire}", interrompre=True)
         logging.info("[%s] répertoire : %s", panneau.nom, panneau.repertoire)
@@ -2385,6 +2426,25 @@ class Fenetre(wx.Frame):
         logging.info("[%s] historique des commandes vidé", panneau.nom)
 
     # -- divers ------------------------------------------------------------
+
+    def ouvrir_documentation(self):
+        """Ouvre la documentation HTML dans le navigateur par défaut.
+
+        Le dossier docs vit à côté de l'exe (ou du script), sur le même
+        principe que settings.json : voir dossier_base(). compiler.bat le
+        copie dans dist\\LazyShell, donc il est déjà présent dans
+        l'archive téléchargée depuis les Releases, sans étape à part.
+        """
+        chemin = dossier_base() / "docs" / "index.html"
+        try:
+            import os
+            os.startfile(str(chemin))
+        except Exception:
+            logging.exception("Impossible d'ouvrir la documentation.")
+            wx.MessageBox(
+                f"La documentation se trouve ici :\n{chemin}",
+                "Documentation", wx.OK | wx.ICON_INFORMATION,
+            )
 
     def ouvrir_journal(self):
         try:
