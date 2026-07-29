@@ -147,6 +147,44 @@ confort ici : c'est le cahier des charges.**
   l'extérieur change de nom, le contenu reste en français. Contenu
   entièrement réécrit pour refléter l'état réel de l'appli (l'ancienne
   version décrivait encore le Palier 0, exécution simulée).
+- **Mode fichiers (navigateur SFTP), en plus du terminal, pour une
+  session SSH.** Ctrl+Maj+F bascule saisie+sortie contre une liste
+  (`PanneauSession.liste_fichiers`, un `wx.ListBox` — même contrôle déjà
+  utilisé pour les autres listes de l'appli, pas de composant nouveau à
+  apprendre à NVDA). `self.repertoire` sert de chemin courant aux deux
+  modes à la fois : naviguer en mode fichiers met à jour le même
+  répertoire que Ctrl+Maj+D, et inversement, pour que l'un reprenne
+  toujours où l'autre s'est arrêté. Remplace entièrement les anciens
+  Ctrl+Maj+E / Ctrl+Maj+T (« Envoyer un fichier… » / « Récupérer un
+  fichier… », un aller simple par boîtes de dialogue) : le mode fichiers
+  couvre le même besoin en mieux, ces deux raccourcis ont été supprimés
+  plutôt que gardés en double emploi.
+  Actions disponibles, en touches nues locales à la liste (même
+  principe que Entrée dans la saisie — pas des raccourcis globaux, donc
+  rien dans `Fenetre.sur_touche_globale`) : Entrée (ouvrir un dossier ou
+  éditer un fichier), Retour arrière (remonter), Suppr (supprimer, avec
+  confirmation — pas de corbeille côté SFTP, c'est définitif), F2
+  (renommer). Nouveau dossier reste à Ctrl+Maj+G (combinaison de
+  modificateurs, donc dans `sur_touche_globale` comme les autres — voir
+  la décision sur la gestion manuelle des raccourcis plus haut).
+  Suppression d'un dossier récursive côté client
+  (`ExecuteurSSH.supprimer_dossier`, `ssh.py`) : le protocole SFTP ne
+  fournit qu'un `rmdir` qui exige un dossier déjà vide.
+  Édition : le fichier est téléchargé dans un dossier temporaire,
+  ouvert dans le Bloc-notes de Windows (`subprocess.Popen`, on attend sa
+  fermeture dans un thread de fond), et renvoyé sur le serveur seulement
+  si sa date de modification a changé pendant que Bloc-notes était
+  ouvert. Bloc-notes plutôt qu'un éditeur interne : déjà pleinement
+  accessible, pas de coloration syntaxique prévue de toute façon, et
+  écrire un éditeur de texte accessible from scratch aurait été un
+  chantier disproportionné pour cette fonctionnalité. Canal SFTP séparé
+  de celui, éphémère, des méthodes `envoyer_fichier`/`recuperer_fichier`
+  existantes (celles-ci restent utilisées telles quelles pour le
+  téléchargement/renvoi d'édition) : `ExecuteurSSH._sftp`, ouvert à la
+  demande et réutilisé pour toute la navigation (listage, renommage,
+  suppression...), fermé avec le reste dans `fermer()` — rouvrir un
+  canal SFTP à chaque frappe aurait été un aller-retour réseau de plus
+  à chaque action.
 
 ## Comment lancer et tester
 
@@ -325,6 +363,105 @@ L'environnement Python est dans `venv`. Utiliser
   dans cette limite — même règle que `Voix.dire()` applique déjà
   ailleurs pour ne pas perdre le message en braille en dépassant la
   limite de l'afficheur.
+
+- **Mode fichiers (SFTP), nouveau, pas encore testé avec un vrai
+  serveur ni au clavier avec NVDA.** Voir la décision correspondante
+  plus haut pour le détail. Fait depuis la version 1.1.0 (publiée),
+  donc pas encore dans un exécutable compilé ni une Release — reste à
+  recompiler et republier quand ce sera vérifié. À vérifier en
+  priorité : navigation (Entrée/Retour arrière) sur une vraie
+  arborescence distante, renommage et suppression (fichier et dossier
+  non vide), création de dossier, et le cycle complet d'édition — un
+  fichier ouvert dans le Bloc-notes, modifié, puis fermé, doit revenir
+  sur le serveur ; fermé sans modification, ne doit rien renvoyer.
+  Deux bugs remontés au premier essai réel. Diagnostic mené en pilotant
+  LazyShell lui-même (autorisation explicite donnée) contre le vrai VPS
+  du profil enregistré, en lecture seule, puis avec des reproductions
+  wx minimales et jetables (aucune des deux méthodes n'a modifié quoi
+  que ce soit côté serveur) :
+  Le plus sérieux, « Entrée n'ouvre aucun dossier (ni même un fichier) »,
+  est confirmé et corrigé. Fausse piste explorée d'abord : les bits de
+  permission SFTP absents au listage — écartée, un test en conditions
+  réelles contre le VPS montre que `attr.st_mode` est correctement
+  renvoyé et que `lister_repertoire` classe déjà bien dossiers et
+  fichiers (repli sur `longname` gardé quand même, inoffensif). La
+  vraie cause, prouvée par une reproduction wx isolée : **`wx.ListBox`
+  ne génère jamais `EVT_KEY_DOWN` pour Entrée ni pour les flèches** —
+  le contrôle natif les consomme en interne avant que wx ne les
+  transforme en évènement. `PanneauSession.liste_fichiers` avait un
+  `Bind(EVT_KEY_DOWN, ...)` local pour Entrée/Retour arrière/Suppr/F2,
+  sur le modèle de `saisie` — modèle qui ne s'applique pas à ce
+  contrôle. Retiré ; ces quatre touches sont maintenant reconnues dans
+  `Fenetre.sur_touche_globale` (`EVT_CHAR_HOOK`, qui lui reçoit ces
+  touches de façon fiable, prouvé par la même reproduction), avec un
+  garde `panneau.mode_sftp` qui laisse filer la touche à son usage
+  normal ailleurs (Entrée envoie la commande, Retour arrière efface du
+  texte...) quand ce n'est pas le mode fichiers.
+  Le second (Échap qui ramène au terminal après un F2) a fini par être
+  identifié, sur un nouveau signalement précis : ça n'arrive QUE en
+  annulant le renommage avec Échap, pas en validant avec Entrée — et le
+  même phénomène se produit aussi au retour d'un Alt+Tab, partout dans
+  l'appli, pas seulement en mode fichiers. Ce deuxième indice a mené à
+  la vraie cause, dans du code d'AVANT cette session (Palier 2/3) :
+  `Fenetre.rendre_focus_au_champ` (rappelée par `sur_activation` sur
+  EVT_ACTIVATE au retour d'Alt+Tab, et par `sur_focus_cadre` sur
+  EVT_SET_FOCUS du cadre lui-même — donc aussi juste après la fermeture
+  d'une boîte de dialogue, quand le focus transite un instant par le
+  cadre avant de se reposer quelque part) posait *toujours*
+  inconditionnellement le focus sur `panneau.saisie` — sans dommage
+  avant l'existence du mode fichiers, mais posant le focus sur un champ
+  caché dès que ce mode existe. Rendue consciente de
+  `panneau.mode_sftp`, comme `sur_touche_globale` l'était déjà pour
+  Échap. Les chemins d'annulation de `renommer_entree_sftp`,
+  `supprimer_entree_sftp` et `creer_dossier_sftp` (Échap ou Non dans
+  leur boîte respective) posent en plus explicitement le focus sur
+  `liste_fichiers` avant de sortir, plutôt que de compter uniquement
+  sur la restauration automatique de wx à la fermeture d'une modale —
+  celle-ci n'a jamais été prouvée fiable ici (essayée dans plusieurs
+  reproductions isolées sans jamais reproduire le bug, ce qui a
+  d'ailleurs orienté ce diagnostic vers autre chose que wx lui-même).
+
+- **Télécharger / Envoyer, en mode fichiers (Ctrl+Maj+T / Ctrl+Maj+E).**
+  Absents de la première version du mode fichiers : en supprimant les
+  anciens raccourcis du même nom (transfert par boîtes de dialogue à
+  chemin tapé), le mode fichiers avait bien navigation/édition/
+  renommage/suppression/création, mais aucun moyen de garder une copie
+  locale d'un fichier sans l'éditer, ni d'envoyer un fichier quelconque
+  vers le dossier affiché — signalé par l'utilisateur après coup.
+  Recréés avec la même lettre mnémotechnique qu'avant (E = Envoyer, T =
+  Télécharger) mais un comportement adapté au navigateur plutôt qu'à
+  des boîtes de dialogue à chemin tapé : Envoyer dépose toujours dans
+  le dossier *actuellement affiché*, pas un chemin à saisir ; Télécharger
+  demande où garder une copie, et gère un dossier récursivement
+  (`ExecuteurSSH.telecharger_dossier`, `ssh.py` — pas de suivi de
+  progression détaillé, le nombre de fichiers n'est pas connu à
+  l'avance).
+
+- **Placement des menus du mode fichiers, revu une fois le mode en
+  place et testé.** Le basculement terminal/fichiers a quitté le menu
+  Session pour Affichage : c'est un basculement de vue (comme
+  « Listing amélioré », « Horodatage »), pas une action de session — et
+  son libellé change avec l'état (« Basculer en mode fichiers » /
+  « Basculer en mode terminal », `Fenetre.item_mode_fichiers`,
+  synchronisé par `_synchroniser_menu_fichiers()`). Les actions du
+  sous-menu « Fichiers distants » (nouveau dossier, renommer, supprimer,
+  envoyer, télécharger) sont remontées à la racine du menu Session,
+  sans sous-menu : ce sont de vraies actions de session, pas une
+  hiérarchie à part. Grisées hors mode fichiers plutôt que masquées :
+  wx n'a pas de vrai « cacher » pour un item de menu (seulement
+  `Enable(False)`, ou `Remove`/`Insert`, plus fragile à garder juste vu
+  la position exacte et les branchements d'événements) ; surtout, un
+  menu de forme stable où certains items sont temporairement
+  indisponibles se retrouve plus facilement au clavier qu'un menu qui
+  change de nombre d'entrées selon le mode — et NVDA annonce déjà
+  « grisé », qui porte la même information. `_synchroniser_menu_fichiers()`
+  est appelée à la construction des menus, à chaque changement d'onglet
+  (chaque session a son propre `mode_sftp`) et après chaque bascule.
+  Les raccourcis clavier eux-mêmes ne passent pas par l'état grisé du
+  menu (cette appli ne s'appuie jamais sur la table d'accélérateurs
+  native de wx, voir plus haut) : ils restent gérés indépendamment dans
+  `sur_touche_globale`, qui vérifie déjà `panneau.mode_sftp` de son
+  côté.
 
 ## Consignes de travail
 

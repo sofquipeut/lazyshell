@@ -26,10 +26,12 @@ import logging
 import queue
 import re
 import shlex
+import stat
 import sys
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -207,6 +209,19 @@ def reecrire_listing(commande: str) -> str | None:
 
 
 # --------------------------------------------------------------------------
+# Navigateur de fichiers distant (SFTP)
+# --------------------------------------------------------------------------
+
+@dataclass
+class EntreeDistante:
+    nom: str
+    dossier: bool
+    lien: bool = False
+    taille: int = 0
+    modifie: datetime | None = None
+
+
+# --------------------------------------------------------------------------
 # Exécuteur SSH
 # --------------------------------------------------------------------------
 
@@ -219,6 +234,12 @@ class ExecuteurSSH:
     def __init__(self):
         self._client: paramiko.SSHClient | None = None
         self._canal = None
+        # Canal SFTP séparé de celui, éphémère, utilisé par envoyer_fichier
+        # /recuperer_fichier : la navigation dans l'arborescence enchaîne
+        # beaucoup d'appels (listage, renommage, suppression...), rouvrir un
+        # canal à chacun serait un aller-retour réseau de plus à chaque
+        # frappe. Ouvert à la demande, fermé avec le reste dans fermer().
+        self._sftp: paramiko.SFTPClient | None = None
         self._verrou = threading.Lock()
 
     @property
@@ -305,9 +326,125 @@ class ExecuteurSSH:
     def fermer(self) -> None:
         with self._verrou:
             client, self._client = self._client, None
+            sftp, self._sftp = self._sftp, None
+        if sftp is not None:
+            sftp.close()
         if client is not None:
             client.close()
             logging.info("Connexion SSH fermée.")
+
+    # -- navigateur de fichiers (SFTP) --------------------------------------
+
+    def _sftp_persistant(self) -> paramiko.SFTPClient:
+        with self._verrou:
+            client = self._client
+            sftp = self._sftp
+        if client is None:
+            raise RuntimeError("Aucune connexion SSH active.")
+        if sftp is None:
+            sftp = client.open_sftp()
+            with self._verrou:
+                self._sftp = sftp
+        return sftp
+
+    def chemin_absolu(self, chemin: str) -> str:
+        """Résout un chemin (dont « . », le répertoire de connexion) en
+        chemin absolu côté serveur. Sert de socle fiable à toute la
+        navigation : sans lui, un chemin relatif resterait ambigu dès
+        qu'on veut le recomposer plus tard (remonter, renommer...)."""
+        return self._sftp_persistant().normalize(chemin)
+
+    def lister_repertoire(self, chemin: str) -> list[EntreeDistante]:
+        """Liste un dossier distant. Bloque : à appeler hors thread
+        principal. Dossiers et liens vers un dossier d'abord, alphabétique
+        dans chaque groupe — ce qui se parcourt en premier doit venir en
+        premier."""
+        sftp = self._sftp_persistant()
+        entrees = []
+        for attr in sftp.listdir_attr(chemin):
+            mode = attr.st_mode or 0
+            lien = stat.S_ISLNK(mode)
+            dossier = stat.S_ISDIR(mode)
+            if not mode:
+                # Certains serveurs SFTP ne renvoient pas les bits de
+                # permission au listage (attribut absent du readdir) :
+                # sans repli, tout finirait classé « fichier », y compris
+                # de vrais dossiers. La colonne de type du format
+                # « ls -l » classique (longname) est presque toujours
+                # présente même dans ce cas.
+                premier_car = (attr.longname or "")[:1]
+                lien = premier_car == "l"
+                dossier = premier_car == "d"
+            # readdir renvoie les attributs du lien lui-même (lstat), pas
+            # de sa cible : on résout pour savoir si un lien mène à un
+            # dossier, sans quoi il faudrait le suivre à l'aveugle pour
+            # le savoir. Cible absente ou inaccessible : traité en fichier.
+            if lien:
+                try:
+                    dossier = stat.S_ISDIR(
+                        sftp.stat(f"{chemin.rstrip('/')}/{attr.filename}").st_mode
+                    )
+                except OSError:
+                    dossier = False
+            entrees.append(EntreeDistante(
+                nom=attr.filename,
+                dossier=dossier,
+                lien=lien,
+                taille=attr.st_size or 0,
+                modifie=(
+                    datetime.fromtimestamp(attr.st_mtime) if attr.st_mtime else None
+                ),
+            ))
+            logging.debug(
+                "Entrée SFTP : %s mode=%s longname=%r -> dossier=%s lien=%s",
+                attr.filename, attr.st_mode, attr.longname, dossier, lien,
+            )
+        entrees.sort(key=lambda e: (not e.dossier, e.nom.lower()))
+        return entrees
+
+    def renommer(self, ancien_chemin: str, nouveau_chemin: str) -> None:
+        self._sftp_persistant().rename(ancien_chemin, nouveau_chemin)
+        logging.info("Renommé (SFTP) : %s -> %s", ancien_chemin, nouveau_chemin)
+
+    def supprimer_fichier(self, chemin: str) -> None:
+        self._sftp_persistant().remove(chemin)
+        logging.info("Fichier supprimé (SFTP) : %s", chemin)
+
+    def supprimer_dossier(self, chemin: str) -> None:
+        """Supprime récursivement : rmdir seul du protocole SFTP n'accepte
+        qu'un dossier déjà vide."""
+        sftp = self._sftp_persistant()
+        for attr in sftp.listdir_attr(chemin):
+            sous_chemin = f"{chemin.rstrip('/')}/{attr.filename}"
+            if stat.S_ISDIR(attr.st_mode or 0):
+                self.supprimer_dossier(sous_chemin)
+            else:
+                sftp.remove(sous_chemin)
+        sftp.rmdir(chemin)
+        logging.info("Dossier supprimé (SFTP) : %s", chemin)
+
+    def creer_dossier(self, chemin: str) -> None:
+        self._sftp_persistant().mkdir(chemin)
+        logging.info("Dossier créé (SFTP) : %s", chemin)
+
+    def telecharger_dossier(self, chemin_distant: str, dossier_local: str) -> None:
+        """Télécharge récursivement un dossier distant, en reproduisant
+        l'arborescence sous dossier_local. Bloque : à appeler hors thread
+        principal. Pas de suivi de progression détaillé (nombre de
+        fichiers inconnu à l'avance) : seul le statut global (en cours /
+        terminé / échoué) remonte à l'appelant."""
+        Path(dossier_local).mkdir(parents=True, exist_ok=True)
+        sftp = self._sftp_persistant()
+        for entree in self.lister_repertoire(chemin_distant):
+            chemin_distant_enfant = f"{chemin_distant.rstrip('/')}/{entree.nom}"
+            chemin_local_enfant = str(Path(dossier_local) / entree.nom)
+            if entree.dossier:
+                self.telecharger_dossier(chemin_distant_enfant, chemin_local_enfant)
+            else:
+                sftp.get(chemin_distant_enfant, chemin_local_enfant)
+        logging.info(
+            "Dossier téléchargé (SFTP) : %s -> %s", chemin_distant, dossier_local
+        )
 
     # -- transfert de fichiers (SFTP) --------------------------------------
 

@@ -45,6 +45,7 @@ de fenêtre de console.</p>
 <nav aria-label="Sommaire">
 <ul>
   <li><a href="#fonctionnement">Fonctionnement général</a></li>
+  <li><a href="#fichiers">Mode fichiers (SFTP)</a></li>
   <li><a href="#raccourcis">Raccourcis clavier</a></li>
   <li><a href="#limites">Limites connues</a></li>
   <li><a href="#journal">Le journal</a></li>
@@ -72,6 +73,44 @@ Le nom de la session figure dans le nom accessible des champs de saisie
 et de sortie, pour éviter de taper une commande dans la mauvaise
 session.</p>
 
+<h2 id="fichiers">Mode fichiers (SFTP)</h2>
+
+<p>Une session SSH peut basculer (Ctrl+Maj+F) entre le terminal habituel
+et un navigateur de fichiers distant : la saisie et la sortie disparaissent
+au profit d'une liste des fichiers et dossiers du répertoire courant,
+parcourue aux flèches comme n'importe quel contrôle de liste. Un second
+Ctrl+Maj+F revient au terminal, au même répertoire.</p>
+
+<table>
+<tr><th scope="col">Touche</th><th scope="col">Action</th></tr>
+<tr><td>Entrée</td><td>Ouvrir le dossier sélectionné, ou éditer le fichier sélectionné</td></tr>
+<tr><td>Retour arrière</td><td>Remonter au dossier parent</td></tr>
+<tr><td>F2</td><td>Renommer l'élément sélectionné</td></tr>
+<tr><td>Suppr</td><td>Supprimer l'élément sélectionné (avec confirmation)</td></tr>
+<tr><td>Ctrl+Maj+G</td><td>Créer un dossier</td></tr>
+<tr><td>Ctrl+Maj+E</td><td>Envoyer un fichier de cette machine vers le dossier affiché</td></tr>
+<tr><td>Ctrl+Maj+T</td><td>Télécharger l'élément sélectionné vers cette machine</td></tr>
+</table>
+
+<p>Éditer un fichier (Entrée) le télécharge dans un dossier temporaire et
+l'ouvre dans le Bloc-notes de Windows. LazyShell attend la fermeture du
+Bloc-notes ; si le fichier a été modifié (et seulement dans ce cas), il
+est renvoyé automatiquement sur le serveur à la fermeture. Aucun
+formatage ni coloration syntaxique : c'est le Bloc-notes tel quel,
+volontairement, pour rester sur un éditeur déjà pleinement accessible
+plutôt que d'en réinventer un.</p>
+
+<p>Télécharger (Ctrl+Maj+T) est différent : on choisit où garder une
+copie, sans passer par Notepad ni la renvoyer automatiquement. Sur un
+dossier, le téléchargement est récursif (tout le contenu, avec la même
+arborescence). Envoyer (Ctrl+Maj+E) dépose toujours le fichier choisi
+dans le dossier actuellement affiché — pas de chemin à taper, la
+destination est celle qu'on est en train de parcourir.</p>
+
+<p>Supprimer un dossier non vide supprime tout son contenu avec lui — la
+boîte de dialogue de confirmation le rappelle, mais il n'y a pas de
+corbeille côté serveur : une suppression SFTP est définitive.</p>
+
 <h2 id="raccourcis">Raccourcis clavier</h2>
 
 <p>Tout est également accessible depuis la barre de menus.</p>
@@ -97,8 +136,7 @@ session.</p>
 <tr><td>Ctrl+Tab / Ctrl+Maj+Tab</td><td>Session suivante / précédente</td></tr>
 <tr><td>Ctrl+1 à Ctrl+9</td><td>Aller directement à une session</td></tr>
 <tr><td>Ctrl+Maj+D</td><td>Changer de répertoire courant</td></tr>
-<tr><td>Ctrl+Maj+E</td><td>Envoyer un fichier (session SSH)</td></tr>
-<tr><td>Ctrl+Maj+T</td><td>Récupérer un fichier (session SSH)</td></tr>
+<tr><td>Ctrl+Maj+F</td><td>Basculer entre terminal et mode fichiers (session SSH)</td></tr>
 </table>
 
 <h3>Commandes enregistrées</h3>

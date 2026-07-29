@@ -31,6 +31,7 @@ import wx
 
 from execution import ExecuteurLocal, Resultat
 from ssh import (
+    EntreeDistante,
     ExecuteurSSH,
     ProfilConnexion,
     charger_profils,
@@ -41,7 +42,7 @@ from ssh import (
 )
 
 APP_NOM = "LazyShell"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 # Niveaux de verbosité de l'annonce vocale
 VERBOSITE_RESUME = 0
@@ -620,6 +621,25 @@ def copier_presse_papiers(texte: str) -> bool:
     return True
 
 
+def _joindre_chemin_distant(base: str, nom: str) -> str:
+    """Chemins POSIX toujours en « / », jamais via les fonctions de
+    Path qui utiliseraient le séparateur Windows sur cette machine."""
+    base = base.rstrip("/")
+    return f"{base}/{nom}" if base else f"/{nom}"
+
+
+def _libelle_entree_sftp(entree: EntreeDistante) -> str:
+    """Libellé d'une ligne du navigateur de fichiers distant. Mêmes
+    intitulés que le listing amélioré local et SSH (dossier/fichier/lien),
+    pour rester cohérent d'un bout à l'autre de l'appli."""
+    if entree.dossier:
+        genre = "lien vers un dossier" if entree.lien else "dossier"
+        return f"{entree.nom} — {genre}"
+    genre = "lien" if entree.lien else "fichier"
+    modifie = entree.modifie.strftime("%d/%m/%Y %H:%M") if entree.modifie else ""
+    return f"{entree.nom} — {genre} — {entree.taille} octets — {modifie}"
+
+
 # --------------------------------------------------------------------------
 # Réglages partages
 # --------------------------------------------------------------------------
@@ -720,8 +740,13 @@ class PanneauSession(wx.Panel):
         self._commande_en_cours = ""
         self._debut = 0.0
         self._invite_boite: wx.TextEntryDialog | None = None
+        # Mode fichiers (SSH seulement) : bascule saisie+sortie contre un
+        # navigateur SFTP. self.repertoire sert de chemin courant aux deux
+        # modes, pour que l'un reprenne où l'autre s'est arrêté.
+        self.mode_sftp = False
+        self._entrees_sftp: list[EntreeDistante] = []
 
-        etiquette_saisie = wx.StaticText(self, label=f"&Commande — {nom} :")
+        self.etiquette_saisie = wx.StaticText(self, label=f"&Commande — {nom} :")
         # Multiligne pour accepter les commandes sur plusieurs lignes.
         # Entrée envoie, Maj+Entrée saute une ligne : on gère les deux
         # dans sur_touche_saisie plutôt que par TE_PROCESS_ENTER, dont le
@@ -730,34 +755,52 @@ class PanneauSession(wx.Panel):
         self.saisie.SetName(f"Commande, {nom}")
         self.saisie.SetMinSize((-1, 64))
 
-        etiquette_sortie = wx.StaticText(self, label=f"&Sortie — {nom} :")
+        self.etiquette_sortie = wx.StaticText(self, label=f"&Sortie — {nom} :")
         self.sortie = wx.TextCtrl(
             self,
             style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2 | wx.TE_DONTWRAP,
         )
         self.sortie.SetName(f"Sortie, {nom}")
+
+        self.etiquette_fichiers = wx.StaticText(self, label=f"&Fichiers distants — {nom} :")
+        self.liste_fichiers = wx.ListBox(self)
+        self.liste_fichiers.SetName(f"Fichiers distants, {nom}")
+        self.etiquette_fichiers.Hide()
+        self.liste_fichiers.Hide()
+
         self.appliquer_taille_police()
 
         boite = wx.BoxSizer(wx.VERTICAL)
-        boite.Add(etiquette_saisie, 0, wx.LEFT | wx.RIGHT | wx.TOP, 6)
+        boite.Add(self.etiquette_saisie, 0, wx.LEFT | wx.RIGHT | wx.TOP, 6)
         boite.Add(self.saisie, 0, wx.EXPAND | wx.ALL, 6)
-        boite.Add(etiquette_sortie, 0, wx.LEFT | wx.RIGHT, 6)
+        boite.Add(self.etiquette_sortie, 0, wx.LEFT | wx.RIGHT, 6)
         boite.Add(self.sortie, 1, wx.EXPAND | wx.ALL, 6)
+        boite.Add(self.etiquette_fichiers, 0, wx.LEFT | wx.RIGHT | wx.TOP, 6)
+        boite.Add(self.liste_fichiers, 1, wx.EXPAND | wx.ALL, 6)
         self.SetSizer(boite)
 
         self.saisie.Bind(wx.EVT_KEY_DOWN, self.sur_touche_saisie)
         self.sortie.Bind(wx.EVT_CHAR, self.sur_frappe_dans_sortie)
+        # Pas de EVT_KEY_DOWN local sur liste_fichiers, à la différence de
+        # saisie ci-dessus : vérifié par un test isolé, wx.ListBox ne
+        # génère tout simplement pas cet évènement pour Entrée ni les
+        # flèches (consommées en interne par le contrôle natif avant
+        # d'atteindre le niveau événementiel de wx). Entrée/Retour
+        # arrière/Suppr/F2 pour ce contrôle sont donc gérés dans
+        # Fenetre.sur_touche_globale (EVT_CHAR_HOOK, qui lui reçoit ces
+        # touches de façon fiable), pas ici.
 
     def appliquer_taille_police(self) -> None:
-        """Reconstruit et repose la police sur les deux champs, à la
-        taille actuellement réglée. Appelé à la création du panneau, et
-        de nouveau par Fenetre sur chaque session ouverte quand la
-        taille change en cours d'usage."""
+        """Reconstruit et repose la police sur les champs, à la taille
+        actuellement réglée. Appelé à la création du panneau, et de
+        nouveau par Fenetre sur chaque session ouverte quand la taille
+        change en cours d'usage."""
         police = wx.Font(
             wx.FontInfo(self.reglages.taille_police).Family(wx.FONTFAMILY_TELETYPE)
         )
         self.saisie.SetFont(police)
         self.sortie.SetFont(police)
+        self.liste_fichiers.SetFont(police)
 
     # -- saisie ------------------------------------------------------------
 
@@ -1126,6 +1169,371 @@ class PanneauSession(wx.Panel):
         # d'en-tête, NVDA la lit de lui-même. Doubler l'annonce revient a
         # entendre deux fois la même chose, ou a ce que l'une coupe l'autre.
         self.voix.dire(braille=bloc.entete())
+
+    # -- mode fichiers (SFTP) -----------------------------------------------
+
+    def basculer_mode_sftp(self) -> None:
+        """Bascule entre le terminal (saisie + sortie) et le navigateur de
+        fichiers distant (liste). Réservé aux sessions SSH : une session
+        locale n'a pas de canal SFTP à parcourir."""
+        if not self.distant:
+            self.voix.dire("Cette action nécessite une session SSH.", interrompre=True)
+            return
+        self.mode_sftp = not self.mode_sftp
+        # sizer.Show(), pas juste window.Show() : sans passer par le
+        # sizer, l'espace du contrôle caché resterait réservé, vide, au
+        # lieu d'être repris par l'autre mode.
+        sizer = self.GetSizer()
+        sizer.Show(self.etiquette_saisie, not self.mode_sftp)
+        sizer.Show(self.saisie, not self.mode_sftp)
+        sizer.Show(self.etiquette_sortie, not self.mode_sftp)
+        sizer.Show(self.sortie, not self.mode_sftp)
+        sizer.Show(self.etiquette_fichiers, self.mode_sftp)
+        sizer.Show(self.liste_fichiers, self.mode_sftp)
+        sizer.Layout()
+        if self.mode_sftp:
+            self.voix.dire("Mode fichiers.", interrompre=True)
+            self.charger_dossier_sftp(self.repertoire or ".")
+        else:
+            self.voix.dire("Mode terminal.", interrompre=True)
+            self.saisie.SetFocus()
+
+    def charger_dossier_sftp(self, chemin: str) -> None:
+        """(Re)charge un dossier distant dans la liste, en tâche de fond :
+        un listage reste un aller-retour réseau, il ne doit pas figer
+        l'interface le temps qu'il revienne."""
+        self.liste_fichiers.Set(["Chargement…"])
+
+        def travailler():
+            try:
+                reel = self.executeur.chemin_absolu(chemin)
+                entrees = self.executeur.lister_repertoire(reel)
+            except Exception as erreur:
+                logging.exception("Listage SFTP échoué : %s", chemin)
+                wx.CallAfter(self._echec_action_sftp, "Listage", erreur)
+                wx.CallAfter(self.liste_fichiers.Set, [])
+                return
+            wx.CallAfter(self._dossier_sftp_charge, reel, entrees)
+
+        threading.Thread(target=travailler, daemon=True).start()
+
+    def _dossier_sftp_charge(self, chemin: str, entrees: list[EntreeDistante]) -> None:
+        self._entrees_sftp = entrees
+        self.definir_repertoire(chemin)
+        self.liste_fichiers.Set([_libelle_entree_sftp(e) for e in entrees])
+        if entrees:
+            self.liste_fichiers.SetSelection(0)
+        if self.mode_sftp:
+            self.liste_fichiers.SetFocus()
+
+    def _echec_action_sftp(self, verbe: str, erreur: Exception) -> None:
+        wx.MessageBox(
+            f"{verbe} impossible :\n{erreur}", f"{verbe} échoué",
+            wx.OK | wx.ICON_ERROR,
+        )
+        self.voix.dire(f"{verbe} échoué.", interrompre=True)
+
+    def activer_entree_sftp_selectionnee(self) -> None:
+        """Point d'entrée pour Entrée en mode fichiers, appelé depuis
+        Fenetre.sur_touche_globale (voir plus bas pourquoi PAS depuis un
+        gestionnaire local sur la liste)."""
+        index = self.liste_fichiers.GetSelection()
+        if index != wx.NOT_FOUND:
+            self._activer_entree_sftp(index)
+
+    def _activer_entree_sftp(self, index: int) -> None:
+        entree = self._entrees_sftp[index]
+        chemin = _joindre_chemin_distant(self.repertoire, entree.nom)
+        logging.debug(
+            "Entrée activée : %s (dossier=%s) -> %s", entree.nom, entree.dossier, chemin
+        )
+        if entree.dossier:
+            self.charger_dossier_sftp(chemin)
+        else:
+            self._editer_fichier_sftp(chemin, entree.nom)
+
+    def remonter_sftp(self) -> None:
+        if not self.mode_sftp:
+            return
+        if self.repertoire in ("", "/"):
+            self.voix.dire("Déjà à la racine.", interrompre=True)
+            return
+        parent = self.repertoire.rsplit("/", 1)[0]
+        self.charger_dossier_sftp(parent or "/")
+
+    def renommer_entree_sftp(self) -> None:
+        if not self.mode_sftp:
+            self.voix.dire(
+                "Cette action nécessite le mode fichiers (Ctrl+Maj+F).",
+                interrompre=True,
+            )
+            return
+        index = self.liste_fichiers.GetSelection()
+        if index == wx.NOT_FOUND:
+            self.voix.dire("Aucun élément sélectionné.", interrompre=True)
+            return
+        entree = self._entrees_sftp[index]
+        with wx.TextEntryDialog(
+            self, "Nouveau nom :", "Renommer", entree.nom,
+        ) as boite:
+            if boite.ShowModal() != wx.ID_OK:
+                # wx ne restaure pas fiablement le focus sur la liste après
+                # une boîte annulée (à la différence du chemin OK, qui
+                # passe par charger_dossier_sftp et le refait) : sans cet
+                # appel explicite, le clavier reste sur on ne sait quoi.
+                self.liste_fichiers.SetFocus()
+                return
+            nouveau_nom = boite.GetValue().strip()
+        if not nouveau_nom or nouveau_nom == entree.nom:
+            self.liste_fichiers.SetFocus()
+            return
+        ancien_chemin = _joindre_chemin_distant(self.repertoire, entree.nom)
+        nouveau_chemin = _joindre_chemin_distant(self.repertoire, nouveau_nom)
+        chemin_courant = self.repertoire
+        self.voix.dire(f"Renommage de {entree.nom}.", interrompre=True)
+
+        def travailler():
+            try:
+                self.executeur.renommer(ancien_chemin, nouveau_chemin)
+            except Exception as erreur:
+                logging.exception("Renommage SFTP échoué : %s", ancien_chemin)
+                wx.CallAfter(self._echec_action_sftp, "Renommage", erreur)
+                return
+            wx.CallAfter(self.voix.dire, f"Renommé en {nouveau_nom}.", interrompre=True)
+            wx.CallAfter(self.charger_dossier_sftp, chemin_courant)
+
+        threading.Thread(target=travailler, daemon=True).start()
+
+    def supprimer_entree_sftp(self) -> None:
+        if not self.mode_sftp:
+            self.voix.dire(
+                "Cette action nécessite le mode fichiers (Ctrl+Maj+F).",
+                interrompre=True,
+            )
+            return
+        index = self.liste_fichiers.GetSelection()
+        if index == wx.NOT_FOUND:
+            self.voix.dire("Aucun élément sélectionné.", interrompre=True)
+            return
+        entree = self._entrees_sftp[index]
+        chemin = _joindre_chemin_distant(self.repertoire, entree.nom)
+        chemin_courant = self.repertoire
+
+        message = f"Supprimer {'le dossier' if entree.dossier else 'le fichier'} « {entree.nom} » ?"
+        if entree.dossier:
+            message += (
+                "\n\nAttention : s'il n'est pas vide, tout son contenu "
+                "sera supprimé avec lui, sans confirmation supplémentaire."
+            )
+        if wx.MessageBox(
+            message, "Confirmer la suppression", wx.YES_NO | wx.ICON_WARNING
+        ) != wx.YES:
+            self.liste_fichiers.SetFocus()
+            return
+        self.voix.dire(f"Suppression de {entree.nom}.", interrompre=True)
+
+        def travailler():
+            try:
+                if entree.dossier:
+                    self.executeur.supprimer_dossier(chemin)
+                else:
+                    self.executeur.supprimer_fichier(chemin)
+            except Exception as erreur:
+                logging.exception("Suppression SFTP échouée : %s", chemin)
+                wx.CallAfter(self._echec_action_sftp, "Suppression", erreur)
+                return
+            wx.CallAfter(self.voix.dire, f"{entree.nom} supprimé.", interrompre=True)
+            wx.CallAfter(self.charger_dossier_sftp, chemin_courant)
+
+        threading.Thread(target=travailler, daemon=True).start()
+
+    def creer_dossier_sftp(self) -> None:
+        if not self.mode_sftp:
+            self.voix.dire(
+                "Cette action nécessite le mode fichiers (Ctrl+Maj+F).",
+                interrompre=True,
+            )
+            return
+        with wx.TextEntryDialog(
+            self, "Nom du nouveau dossier :", "Nouveau dossier",
+        ) as boite:
+            if boite.ShowModal() != wx.ID_OK:
+                self.liste_fichiers.SetFocus()
+                return
+            nom = boite.GetValue().strip()
+        if not nom:
+            self.liste_fichiers.SetFocus()
+            return
+        chemin = _joindre_chemin_distant(self.repertoire, nom)
+        chemin_courant = self.repertoire
+        self.voix.dire(f"Création de {nom}.", interrompre=True)
+
+        def travailler():
+            try:
+                self.executeur.creer_dossier(chemin)
+            except Exception as erreur:
+                logging.exception("Création de dossier SFTP échouée : %s", chemin)
+                wx.CallAfter(self._echec_action_sftp, "Création du dossier", erreur)
+                return
+            wx.CallAfter(self.voix.dire, f"Dossier {nom} créé.", interrompre=True)
+            wx.CallAfter(self.charger_dossier_sftp, chemin_courant)
+
+        threading.Thread(target=travailler, daemon=True).start()
+
+    def telecharger_entree_sftp(self) -> None:
+        """Copie l'élément sélectionné (fichier ou dossier, récursif)
+        vers un emplacement choisi sur cette machine. Distinct de
+        l'édition (Entrée) : ici on choisit où et on garde une copie,
+        sans passer par Notepad ni la renvoyer automatiquement."""
+        if not self.mode_sftp:
+            self.voix.dire(
+                "Cette action nécessite le mode fichiers (Ctrl+Maj+F).",
+                interrompre=True,
+            )
+            return
+        index = self.liste_fichiers.GetSelection()
+        if index == wx.NOT_FOUND:
+            self.voix.dire("Aucun élément sélectionné.", interrompre=True)
+            return
+        entree = self._entrees_sftp[index]
+        chemin_distant = _joindre_chemin_distant(self.repertoire, entree.nom)
+
+        if entree.dossier:
+            with wx.DirDialog(
+                self, "Choisissez où télécharger ce dossier",
+            ) as boite:
+                if boite.ShowModal() != wx.ID_OK:
+                    self.liste_fichiers.SetFocus()
+                    return
+                chemin_local = str(Path(boite.GetPath()) / entree.nom)
+        else:
+            with wx.FileDialog(
+                self, "Enregistrer sous", defaultFile=entree.nom,
+                style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT,
+            ) as boite:
+                if boite.ShowModal() != wx.ID_OK:
+                    self.liste_fichiers.SetFocus()
+                    return
+                chemin_local = boite.GetPath()
+
+        self.voix.dire(f"Téléchargement de {entree.nom}.", interrompre=True)
+
+        def travailler():
+            try:
+                if entree.dossier:
+                    self.executeur.telecharger_dossier(chemin_distant, chemin_local)
+                else:
+                    self.executeur.recuperer_fichier(chemin_distant, chemin_local)
+            except Exception as erreur:
+                logging.exception("Téléchargement SFTP échoué : %s", chemin_distant)
+                wx.CallAfter(self._echec_action_sftp, "Téléchargement", erreur)
+                return
+            wx.CallAfter(self.voix.dire, f"{entree.nom} téléchargé.", interrompre=True)
+
+        threading.Thread(target=travailler, daemon=True).start()
+
+    def envoyer_fichier_sftp(self) -> None:
+        """Envoie un fichier choisi sur cette machine vers le répertoire
+        distant actuellement affiché — la cible est toujours « ici », pas
+        un chemin à taper, sur le principe même du navigateur."""
+        if not self.mode_sftp:
+            self.voix.dire(
+                "Cette action nécessite le mode fichiers (Ctrl+Maj+F).",
+                interrompre=True,
+            )
+            return
+        with wx.FileDialog(
+            self, "Choisir le fichier à envoyer",
+            style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
+        ) as boite:
+            if boite.ShowModal() != wx.ID_OK:
+                self.liste_fichiers.SetFocus()
+                return
+            chemin_local = boite.GetPath()
+
+        nom = Path(chemin_local).name
+        chemin_distant = _joindre_chemin_distant(self.repertoire, nom)
+        chemin_courant = self.repertoire
+        self.voix.dire(f"Envoi de {nom}.", interrompre=True)
+
+        def travailler():
+            try:
+                self.executeur.envoyer_fichier(chemin_local, chemin_distant)
+            except Exception as erreur:
+                logging.exception("Envoi SFTP échoué : %s", chemin_distant)
+                wx.CallAfter(self._echec_action_sftp, "Envoi", erreur)
+                return
+            wx.CallAfter(self.voix.dire, f"{nom} envoyé.", interrompre=True)
+            wx.CallAfter(self.charger_dossier_sftp, chemin_courant)
+
+        threading.Thread(target=travailler, daemon=True).start()
+
+    def _editer_fichier_sftp(self, chemin_distant: str, nom: str) -> None:
+        """Télécharge le fichier, ouvre Notepad et attend sa fermeture,
+        puis renvoie le fichier seulement s'il a été modifié.
+
+        Bloc-notes plutôt qu'un éditeur interne : il est déjà pleinement
+        accessible et connu de l'utilisateur, écrire et maintenir un
+        éditeur de texte accessible depuis zéro serait un chantier bien
+        plus lourd que le reste de cette fonctionnalité pour un bénéfice
+        incertain (pas de coloration syntaxique prévue de toute façon).
+        """
+        self.voix.dire(f"Téléchargement de {nom}.", interrompre=True)
+
+        def travailler():
+            import os
+            import shutil
+            import subprocess
+            import tempfile
+
+            dossier_tmp = tempfile.mkdtemp(prefix="lazyshell_")
+            chemin_local = str(Path(dossier_tmp) / nom)
+            try:
+                try:
+                    self.executeur.recuperer_fichier(chemin_distant, chemin_local)
+                except Exception as erreur:
+                    logging.exception(
+                        "Téléchargement pour édition échoué : %s", chemin_distant
+                    )
+                    wx.CallAfter(self._echec_action_sftp, "Téléchargement", erreur)
+                    return
+
+                avant = os.path.getmtime(chemin_local)
+                try:
+                    subprocess.Popen(["notepad.exe", chemin_local]).wait()
+                except Exception as erreur:
+                    logging.exception("Lancement de Notepad impossible.")
+                    wx.CallAfter(
+                        self._echec_action_sftp, "Ouverture dans Notepad", erreur
+                    )
+                    return
+
+                if os.path.getmtime(chemin_local) == avant:
+                    wx.CallAfter(self.voix.dire, "Aucune modification.", interrompre=True)
+                    return
+
+                wx.CallAfter(self.voix.dire, f"Envoi de {nom}.", interrompre=True)
+                try:
+                    self.executeur.envoyer_fichier(chemin_local, chemin_distant)
+                except Exception as erreur:
+                    logging.exception(
+                        "Envoi après édition échoué : %s", chemin_distant
+                    )
+                    wx.CallAfter(self._echec_action_sftp, "Envoi", erreur)
+                    return
+                wx.CallAfter(
+                    self.voix.dire, f"{nom} enregistré sur le serveur.", interrompre=True
+                )
+                # self.repertoire, pas un chemin capturé au départ : le
+                # temps que Notepad reste ouvert est indéterminé, et
+                # rien n'empêche d'avoir navigué ailleurs entre-temps.
+                # Rafraîchir « où on est maintenant » est plus juste que
+                # de revenir de force à l'ancien dossier.
+                wx.CallAfter(self.charger_dossier_sftp, self.repertoire)
+            finally:
+                shutil.rmtree(dossier_tmp, ignore_errors=True)
+
+        threading.Thread(target=travailler, daemon=True).start()
 
 
 # --------------------------------------------------------------------------
@@ -1712,13 +2120,22 @@ class Fenetre(wx.Frame):
         evt.Skip()
 
     def rendre_focus_au_champ(self):
-        """Pose le focus sur le champ de saisie de la session courante."""
+        """Pose le focus sur le champ principal de la session courante :
+        la saisie en mode terminal, la liste en mode fichiers.
+
+        Longtemps figé sur panneau.saisie sans condition — sans dommage
+        avant l'existence du mode fichiers, mais posait le focus sur un
+        champ caché (saisie) dès qu'une boîte de dialogue du mode
+        fichiers se refermait, ou au retour d'un Alt+Tab pendant qu'une
+        session était en mode fichiers.
+        """
         if not self:                 # fenêtre détruite entre-temps
             return
         panneau = self.session()
         if panneau is None:
             return
-        panneau.saisie.SetFocus()
+        cible = panneau.liste_fichiers if panneau.mode_sftp else panneau.saisie
+        cible.SetFocus()
 
     def sur_fermeture(self, evt):
         """Une commande en cours doit être tuée : sinon le processus
@@ -1775,12 +2192,42 @@ class Fenetre(wx.Frame):
         self.Bind(wx.EVT_MENU,
                   lambda e: self.changer_repertoire(),
                   m_session.Append(wx.ID_ANY, "Changer de &répertoire\tCtrl+Maj+D"))
-        self.Bind(wx.EVT_MENU,
-                  lambda e: self.envoyer_fichier_ssh(),
-                  m_session.Append(wx.ID_ANY, "&Envoyer un fichier…\tCtrl+Maj+E"))
-        self.Bind(wx.EVT_MENU,
-                  lambda e: self.recuperer_fichier_ssh(),
-                  m_session.Append(wx.ID_ANY, "&Récupérer un fichier…\tCtrl+Maj+T"))
+
+        # Actions du mode fichiers, à la racine plutôt que dans un
+        # sous-menu : ce sont de vraies actions de session (comme
+        # « Changer de répertoire » juste au-dessus), pas une hiérarchie
+        # à part. Grisées hors mode fichiers (_synchroniser_menu_fichiers)
+        # plutôt que masquées : un menu de forme stable, avec certains
+        # items temporairement indisponibles, se retrouve plus facilement
+        # au clavier qu'un menu qui change de nombre d'entrées — et NVDA
+        # annonce déjà « grisé », qui porte la même information.
+        m_session.AppendSeparator()
+        self.item_nouveau_dossier_sftp = m_session.Append(
+            wx.ID_ANY, "&Nouveau dossier…\tCtrl+Maj+G"
+        )
+        self.Bind(wx.EVT_MENU, lambda e: self.creer_dossier_sftp(),
+                  self.item_nouveau_dossier_sftp)
+        self.item_renommer_sftp = m_session.Append(wx.ID_ANY, "&Renommer…\tF2")
+        self.Bind(wx.EVT_MENU, lambda e: self.renommer_entree_sftp(),
+                  self.item_renommer_sftp)
+        self.item_supprimer_sftp = m_session.Append(wx.ID_ANY, "&Supprimer\tSuppr")
+        self.Bind(wx.EVT_MENU, lambda e: self.supprimer_entree_sftp(),
+                  self.item_supprimer_sftp)
+        self.item_envoyer_sftp = m_session.Append(
+            wx.ID_ANY, "&Envoyer un fichier…\tCtrl+Maj+E"
+        )
+        self.Bind(wx.EVT_MENU, lambda e: self.envoyer_fichier_sftp(),
+                  self.item_envoyer_sftp)
+        self.item_telecharger_sftp = m_session.Append(
+            wx.ID_ANY, "&Télécharger l'élément sélectionné…\tCtrl+Maj+T"
+        )
+        self.Bind(wx.EVT_MENU, lambda e: self.telecharger_entree_sftp(),
+                  self.item_telecharger_sftp)
+        self.items_action_fichiers = [
+            self.item_nouveau_dossier_sftp, self.item_renommer_sftp,
+            self.item_supprimer_sftp, self.item_envoyer_sftp,
+            self.item_telecharger_sftp,
+        ]
         m_session.AppendSeparator()
         self.Bind(wx.EVT_MENU,
                   lambda e: self.Close(),
@@ -1826,6 +2273,14 @@ class Fenetre(wx.Frame):
         self.Bind(wx.EVT_MENU,
                   lambda e: self.basculer_champ(),
                   m_affichage.Append(wx.ID_ANY, "&Basculer saisie / sortie\tF6"))
+        # Libellé mis à jour par _synchroniser_menu_fichiers (annonce ce
+        # vers quoi on bascule, pas juste « basculer ») : un basculement
+        # de vue comme celui-ci, pas une action de session.
+        self.item_mode_fichiers = m_affichage.Append(
+            wx.ID_ANY, "Basculer en mode &fichiers\tCtrl+Maj+F"
+        )
+        self.Bind(wx.EVT_MENU, lambda e: self.basculer_mode_sftp(),
+                  self.item_mode_fichiers)
         self.Bind(wx.EVT_MENU,
                   lambda e: self.repeter_saisie(),
                   m_affichage.Append(wx.ID_ANY, "&Relire la saisie\tCtrl+Maj+R"))
@@ -1894,6 +2349,7 @@ class Fenetre(wx.Frame):
         barre.Append(m_aide, "&Aide")
 
         self.SetMenuBar(barre)
+        self._synchroniser_menu_fichiers()
 
     # -- sessions ----------------------------------------------------------
 
@@ -2125,7 +2581,9 @@ class Fenetre(wx.Frame):
             # flèches deviendrait impossible : chaque flèche renverrait
             # aussitôt vers le champ de saisie.
             if wx.Window.FindFocus() is not self.carnet:
-                wx.CallAfter(panneau.saisie.SetFocus)
+                cible = panneau.liste_fichiers if panneau.mode_sftp else panneau.saisie
+                wx.CallAfter(cible.SetFocus)
+        self._synchroniser_menu_fichiers()
         evt.Skip()
 
     # -- navigation et copie ----------------------------------------------
@@ -2133,6 +2591,11 @@ class Fenetre(wx.Frame):
     def basculer_champ(self):
         panneau = self.session()
         if panneau is None:
+            return
+        if panneau.mode_sftp:
+            # Un seul champ en mode fichiers : rien à basculer, F6 ramène
+            # juste dessus si le focus s'en était échappé (Alt+Tab...).
+            panneau.liste_fichiers.SetFocus()
             return
         if panneau.saisie.HasFocus():
             panneau.sortie.SetFocus()
@@ -2215,7 +2678,14 @@ class Fenetre(wx.Frame):
             ) as boite:
                 if boite.ShowModal() != wx.ID_OK:
                     return
-                panneau.definir_repertoire(boite.GetValue().strip())
+                # En mode fichiers, c'est charger_dossier_sftp (pas juste
+                # definir_repertoire) qui doit poser le nouveau chemin :
+                # sinon la liste resterait affichée sur l'ancien dossier
+                # pendant que le titre afficherait déjà le nouveau.
+                if panneau.mode_sftp:
+                    panneau.charger_dossier_sftp(boite.GetValue().strip())
+                else:
+                    panneau.definir_repertoire(boite.GetValue().strip())
         else:
             with wx.DirDialog(
                 self, "Choisissez le répertoire de travail",
@@ -2229,124 +2699,43 @@ class Fenetre(wx.Frame):
         self.voix.dire(f"Répertoire : {panneau.repertoire}", interrompre=True)
         logging.info("[%s] répertoire : %s", panneau.nom, panneau.repertoire)
 
-    # -- transfert de fichiers (SFTP) ---------------------------------------
+    # -- navigateur de fichiers distant (SFTP) ------------------------------
+    #
+    # Le gros de la logique vit sur PanneauSession (même principe que
+    # executer/interrompre) : ces méthodes ne font que retrouver la
+    # session courante, comme copier_bloc ou changer_repertoire un peu
+    # plus haut.
 
-    def envoyer_fichier_ssh(self):
+    def basculer_mode_sftp(self):
         panneau = self.session()
-        if panneau is None or not panneau.distant:
-            self.voix.dire("Cette action nécessite une session SSH.", interrompre=True)
-            return
-        with wx.FileDialog(
-            self, "Choisir le fichier à envoyer",
-            style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
-        ) as boite:
-            if boite.ShowModal() != wx.ID_OK:
-                return
-            chemin_local = boite.GetPath()
+        if panneau is not None:
+            panneau.basculer_mode_sftp()
+        self._synchroniser_menu_fichiers()
 
-        base = panneau.repertoire.rstrip("/") if panneau.repertoire else "."
-        suggestion = f"{base}/{Path(chemin_local).name}"
-        with wx.TextEntryDialog(
-            self, "Chemin distant de destination :",
-            "Envoyer un fichier", suggestion,
-        ) as boite:
-            if boite.ShowModal() != wx.ID_OK:
-                return
-            chemin_distant = boite.GetValue().strip()
-        if not chemin_distant:
-            return
-
-        self._lancer_transfert(panneau, "envoi", chemin_local, chemin_distant)
-
-    def recuperer_fichier_ssh(self):
+    def creer_dossier_sftp(self):
         panneau = self.session()
-        if panneau is None or not panneau.distant:
-            self.voix.dire("Cette action nécessite une session SSH.", interrompre=True)
-            return
-        base = panneau.repertoire.rstrip("/") if panneau.repertoire else "."
-        with wx.TextEntryDialog(
-            self, "Chemin distant du fichier à récupérer :",
-            "Récupérer un fichier", f"{base}/",
-        ) as boite:
-            if boite.ShowModal() != wx.ID_OK:
-                return
-            chemin_distant = boite.GetValue().strip()
-        if not chemin_distant:
-            return
+        if panneau is not None:
+            panneau.creer_dossier_sftp()
 
-        nom_suggere = chemin_distant.rsplit("/", 1)[-1] or "fichier_recupere"
-        with wx.FileDialog(
-            self, "Enregistrer sous", defaultFile=nom_suggere,
-            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT,
-        ) as boite:
-            if boite.ShowModal() != wx.ID_OK:
-                return
-            chemin_local = boite.GetPath()
+    def renommer_entree_sftp(self):
+        panneau = self.session()
+        if panneau is not None:
+            panneau.renommer_entree_sftp()
 
-        self._lancer_transfert(panneau, "reception", chemin_local, chemin_distant)
+    def supprimer_entree_sftp(self):
+        panneau = self.session()
+        if panneau is not None:
+            panneau.supprimer_entree_sftp()
 
-    def _lancer_transfert(self, panneau, direction: str, chemin_local: str, chemin_distant: str):
-        """Lance un envoi ou une réception SFTP en tâche de fond.
+    def telecharger_entree_sftp(self):
+        panneau = self.session()
+        if panneau is not None:
+            panneau.telecharger_entree_sftp()
 
-        Comme pour l'exécution de commandes, rien ne doit bloquer le
-        thread principal : un gros fichier prendrait autrement l'interface
-        en otage jusqu'à la fin du transfert.
-        """
-        nom_fichier = Path(chemin_local).name
-        verbe = "Envoi" if direction == "envoi" else "Réception"
-        self.SetStatusText(f"{verbe} de {nom_fichier}…")
-        self.voix.dire(f"{verbe} de {nom_fichier}.", interrompre=True)
-
-        dernier_pourcentage = {"valeur": -1}
-
-        def progression(transferes: int, total: int) -> None:
-            if total <= 0:
-                return
-            pourcentage = int(transferes * 100 / total)
-            # Un CallAfter par octet transféré noierait la boucle
-            # d'événements : on ne rafraîchit que tous les 10 %.
-            if pourcentage - dernier_pourcentage["valeur"] >= 10 or pourcentage == 100:
-                dernier_pourcentage["valeur"] = pourcentage
-                wx.CallAfter(
-                    self.SetStatusText, f"{verbe} de {nom_fichier} : {pourcentage} %"
-                )
-
-        def travailler():
-            try:
-                if direction == "envoi":
-                    panneau.executeur.envoyer_fichier(
-                        chemin_local, chemin_distant, progression
-                    )
-                else:
-                    panneau.executeur.recuperer_fichier(
-                        chemin_distant, chemin_local, progression
-                    )
-            except Exception as erreur:
-                logging.exception("Transfert de fichier échoué (%s)", direction)
-                wx.CallAfter(self._echec_transfert, verbe, nom_fichier, erreur)
-                return
-            wx.CallAfter(self._transfert_reussi, verbe, nom_fichier, direction,
-                          chemin_local, chemin_distant)
-
-        threading.Thread(target=travailler, daemon=True).start()
-
-    def _echec_transfert(self, verbe: str, nom_fichier: str, erreur: Exception):
-        self.SetStatusText("Transfert échoué.")
-        wx.MessageBox(
-            f"{verbe} de {nom_fichier} impossible :\n{erreur}",
-            "Transfert échoué", wx.OK | wx.ICON_ERROR,
-        )
-        self.voix.dire(f"{verbe} échoué.", interrompre=True)
-
-    def _transfert_reussi(
-        self, verbe: str, nom_fichier: str, direction: str,
-        chemin_local: str, chemin_distant: str,
-    ):
-        self.SetStatusText(f"{verbe} terminé : {nom_fichier}")
-        self.voix.dire(f"{verbe} terminé.", interrompre=True)
-        logging.info(
-            "%s réussi : local=%s distant=%s", verbe, chemin_local, chemin_distant
-        )
+    def envoyer_fichier_sftp(self):
+        panneau = self.session()
+        if panneau is not None:
+            panneau.envoyer_fichier_sftp()
 
     def repeter_saisie(self):
         panneau = self.session()
@@ -2406,6 +2795,23 @@ class Fenetre(wx.Frame):
         """
         for item, valeur in self.items_taille_police:
             item.Check(valeur == self.reglages.taille_police)
+
+    def _synchroniser_menu_fichiers(self) -> None:
+        """Libellé du basculement de vue et disponibilité des actions du
+        mode fichiers, à jour avec la session actuellement affichée.
+
+        Chaque session porte son propre mode_sftp : changer d'onglet doit
+        changer ce que ce menu propose, pas seulement le fait de
+        basculer soi-même.
+        """
+        panneau = self.session()
+        actif = panneau is not None and panneau.mode_sftp
+        self.item_mode_fichiers.SetItemLabel(
+            "Basculer en mode &terminal\tCtrl+Maj+F" if actif
+            else "Basculer en mode &fichiers\tCtrl+Maj+F"
+        )
+        for item in self.items_action_fichiers:
+            item.Enable(actif)
 
     def effacer_sortie(self):
         panneau = self.session()
@@ -2477,6 +2883,14 @@ class Fenetre(wx.Frame):
     # -- clavier global ----------------------------------------------------
 
     def sur_touche_globale(self, evt):
+        # Garde-fou de principe : si une boîte de dialogue modale a la
+        # main, ce gestionnaire ne doit toucher à rien (vérifié séparément
+        # qu'EVT_CHAR_HOOK ne remonte de toute façon pas jusqu'ici tant
+        # qu'une modale est ouverte — mais autant ne pas en dépendre).
+        if wx.GetActiveWindow() is not self:
+            evt.Skip()
+            return
+
         code = evt.GetKeyCode()
         ctrl = evt.ControlDown()
         maj = evt.ShiftDown()
@@ -2489,8 +2903,39 @@ class Fenetre(wx.Frame):
         if code == wx.WXK_ESCAPE and not ctrl and not alt:
             panneau = self.session()
             if panneau is not None:
-                panneau.saisie.SetFocus()
+                cible = panneau.liste_fichiers if panneau.mode_sftp else panneau.saisie
+                cible.SetFocus()
             return
+
+        # Entrée/Retour arrière/Suppr/F2 du mode fichiers : pas de
+        # gestionnaire local sur liste_fichiers, voir le commentaire dans
+        # PanneauSession.__init__ à côté de ses Bind(). Ne rien faire (pas
+        # de return) quand ce n'est pas le mode fichiers, pour laisser
+        # ces touches à leur usage normal ailleurs (Entrée envoie la
+        # commande, Retour arrière efface du texte...).
+        if code in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER) and not ctrl and not alt and not maj:
+            panneau = self.session()
+            if panneau is not None and panneau.mode_sftp:
+                panneau.activer_entree_sftp_selectionnee()
+                return
+
+        if code == wx.WXK_BACK and not ctrl and not alt and not maj:
+            panneau = self.session()
+            if panneau is not None and panneau.mode_sftp:
+                panneau.remonter_sftp()
+                return
+
+        if code == wx.WXK_DELETE and not ctrl and not alt and not maj:
+            panneau = self.session()
+            if panneau is not None and panneau.mode_sftp:
+                panneau.supprimer_entree_sftp()
+                return
+
+        if code == wx.WXK_F2 and not ctrl and not alt and not maj:
+            panneau = self.session()
+            if panneau is not None and panneau.mode_sftp:
+                panneau.renommer_entree_sftp()
+                return
 
         if ctrl and code in (wx.WXK_PAUSE, wx.WXK_CANCEL):
             panneau = self.session()
@@ -2571,12 +3016,20 @@ class Fenetre(wx.Frame):
             self.fermer_session()
             return
 
+        if ctrl and maj and code == ord("F"):
+            self.basculer_mode_sftp()
+            return
+
+        if ctrl and maj and code == ord("G"):
+            self.creer_dossier_sftp()
+            return
+
         if ctrl and maj and code == ord("E"):
-            self.envoyer_fichier_ssh()
+            self.envoyer_fichier_sftp()
             return
 
         if ctrl and maj and code == ord("T"):
-            self.recuperer_fichier_ssh()
+            self.telecharger_entree_sftp()
             return
 
         if ctrl and maj and code == ord("J"):

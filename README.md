@@ -19,7 +19,10 @@ L'accessibilité n'est pas une option ici, c'est le cahier des charges.
   confirmation) ouvrant une boîte de dialogue accessible.
 - SSH par Paramiko : profils de connexion, identifiants dans le
   Gestionnaire d'identifiants Windows, mémorisation de la clé d'hôte à la
-  première connexion, transfert de fichiers SFTP.
+  première connexion.
+- Mode fichiers (SSH) : navigateur SFTP accessible en liste (parcourir,
+  renommer, supprimer, créer un dossier), avec édition des fichiers dans
+  le Bloc-notes de Windows et renvoi automatique sur le serveur.
 - Commandes enregistrées : associer un nom à une commande longue tapée
   régulièrement, pour l'insérer sans avoir à la retaper.
 - Annonce vocale automatique via le client contrôleur NVDA, avec un second
@@ -97,8 +100,19 @@ Tout est également accessible depuis la barre de menus.
 | Ctrl+Tab / Ctrl+Maj+Tab | Session suivante / précédente |
 | Ctrl+1 à Ctrl+9 | Aller directement à une session |
 | Ctrl+Maj+D | Changer de répertoire courant |
-| Ctrl+Maj+E | Envoyer un fichier (session SSH) |
-| Ctrl+Maj+T | Récupérer un fichier (session SSH) |
+| Ctrl+Maj+F | Basculer entre terminal et mode fichiers (session SSH) |
+
+**Mode fichiers (SFTP)**
+
+| Touche | Action |
+|---|---|
+| Entrée | Ouvrir le dossier, ou éditer le fichier sélectionné |
+| Retour arrière | Remonter au dossier parent |
+| F2 | Renommer l'élément sélectionné |
+| Suppr | Supprimer l'élément sélectionné (avec confirmation) |
+| Ctrl+Maj+G | Créer un dossier |
+| Ctrl+Maj+E | Envoyer un fichier de cette machine vers le dossier affiché |
+| Ctrl+Maj+T | Télécharger l'élément sélectionné vers cette machine |
 
 **Commandes enregistrées**
 
