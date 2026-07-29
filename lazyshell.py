@@ -42,7 +42,10 @@ from ssh import (
 )
 
 APP_NOM = "LazyShell"
-VERSION = "1.2.0"
+VERSION = "1.3.0"
+
+# Dépôt GitHub public du projet, pour la vérification des mises à jour.
+URL_DERNIERE_RELEASE = "https://api.github.com/repos/sofquipeut/lazyshell/releases/latest"
 
 # Niveaux de verbosité de l'annonce vocale
 VERBOSITE_RESUME = 0
@@ -113,7 +116,6 @@ def enregistrer_reglages(reglages: "Reglages") -> None:
         "taille_police": reglages.taille_police,
         "verbosite": reglages.verbosite,
         "suivre_sortie": reglages.suivre_sortie,
-        "listing_lisible": reglages.listing_lisible,
         "afficher_horodatage": reglages.afficher_horodatage,
     }
     try:
@@ -156,6 +158,52 @@ def configurer_journal() -> Path:
 
     sys.excepthook = hook
     return chemin
+
+
+# --------------------------------------------------------------------------
+# Vérification des mises à jour
+# --------------------------------------------------------------------------
+
+def _version_plus_recente(distante: str, locale: str) -> bool:
+    """Compare deux versions "major.minor.patch" (le tag GitHub porte un
+    "v" en tête, ex. "v1.2.0" : ignoré). Pas de dépendance externe
+    (packaging.version) pour une comparaison aussi simple — les versions
+    de ce projet suivent toujours ce format."""
+    def parties(v: str) -> tuple[int, ...]:
+        return tuple(int(p) for p in v.lstrip("vV").split("."))
+    try:
+        return parties(distante) > parties(locale)
+    except ValueError:
+        return False
+
+
+def _verifier_derniere_version() -> tuple[str, str] | None:
+    """Interroge l'API GitHub pour la dernière Release publiée. Bloque :
+    à appeler hors thread principal.
+
+    Renvoie (version, url) si une version plus récente que VERSION est
+    disponible, None sinon — déjà à jour, ou vérification impossible.
+    Dégradation silencieuse volontaire (même principe que la DLL NVDA
+    absente) : une vérification de confort ne doit jamais faire échouer
+    ni inquiéter l'utilisateur pour un problème réseau.
+    """
+    import urllib.error
+    import urllib.request
+
+    requete = urllib.request.Request(
+        URL_DERNIERE_RELEASE, headers={"User-Agent": f"{APP_NOM}/{VERSION}"}
+    )
+    try:
+        with urllib.request.urlopen(requete, timeout=5) as reponse:
+            donnees = json.loads(reponse.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError) as erreur:
+        logging.info("Vérification des mises à jour impossible : %s", erreur)
+        return None
+    tag = donnees.get("tag_name", "")
+    url = donnees.get("html_url", "")
+    if tag and url and _version_plus_recente(tag, VERSION):
+        return tag.lstrip("vV"), url
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -660,7 +708,6 @@ class Reglages:
         except (TypeError, ValueError):
             self.verbosite = VERBOSITE_RESUME_PLUS
         self.afficher_horodatage = bool(donnees.get("afficher_horodatage", False))
-        self.listing_lisible = bool(donnees.get("listing_lisible", True))
         self.suivre_sortie = bool(donnees.get("suivre_sortie", False))
         try:
             taille = int(donnees.get("taille_police", TAILLE_POLICE_DEFAUT))
@@ -955,7 +1002,11 @@ class PanneauSession(wx.Panel):
                 repertoire=self.repertoire,
                 sur_lenteur=lambda: wx.CallAfter(self._signaler_lenteur),
                 sur_invite=self._repondre_invite,
-                listing_lisible=self.reglages.listing_lisible,
+                # Toujours vrai désormais : plus de réglage pour le
+                # désactiver (voir décision correspondante, CLAUDE.md) —
+                # le mode fichiers couvre le besoin de parcourir sans
+                # cette réécriture.
+                listing_lisible=True,
             )
             wx.CallAfter(self._commande_terminee, commande, resultat)
 
@@ -2099,6 +2150,9 @@ class Fenetre(wx.Frame):
 
         self.nouvelle_session("Local")
         self.Centre()
+        # Silencieux : une vérification de confort au démarrage ne doit
+        # rien annoncer si tout est déjà à jour ou si le réseau manque.
+        self.verifier_mise_a_jour(silencieux=True)
 
     def sur_focus_cadre(self, evt):
         wx.CallAfter(self.rendre_focus_au_champ)
@@ -2203,7 +2257,7 @@ class Fenetre(wx.Frame):
         # annonce déjà « grisé », qui porte la même information.
         m_session.AppendSeparator()
         self.item_nouveau_dossier_sftp = m_session.Append(
-            wx.ID_ANY, "&Nouveau dossier…\tCtrl+Maj+G"
+            wx.ID_ANY, "&Nouveau dossier…\tCtrl+Maj+N"
         )
         self.Bind(wx.EVT_MENU, lambda e: self.creer_dossier_sftp(),
                   self.item_nouveau_dossier_sftp)
@@ -2296,15 +2350,6 @@ class Fenetre(wx.Frame):
         self.Bind(wx.EVT_MENU,
                   lambda e: self.basculer_suivi(),
                   self.item_suivre)
-        self.item_listing = m_affichage.Append(
-            wx.ID_ANY, "Listing a&mélioré\tCtrl+Maj+N",
-            "Place le nom du fichier en tête de ligne dans dir et ls",
-            wx.ITEM_CHECK,
-        )
-        self.item_listing.Check(self.reglages.listing_lisible)
-        self.Bind(wx.EVT_MENU,
-                  lambda e: self.basculer_listing(),
-                  self.item_listing)
         self.item_horodatage = m_affichage.Append(
             wx.ID_ANY, "Afficher l'&horodatage des blocs\tCtrl+Maj+H",
             "Ajoute l'heure dans la ligne d'en-tête de chaque bloc",
@@ -2343,6 +2388,9 @@ class Fenetre(wx.Frame):
         self.Bind(wx.EVT_MENU,
                   lambda e: self.ouvrir_journal(),
                   m_aide.Append(wx.ID_ANY, "Ouvrir le &journal"))
+        self.Bind(wx.EVT_MENU,
+                  lambda e: self.verifier_mise_a_jour(silencieux=False),
+                  m_aide.Append(wx.ID_ANY, "&Vérifier les mises à jour"))
         self.Bind(wx.EVT_MENU,
                   lambda e: self.a_propos(),
                   m_aide.Append(wx.ID_ABOUT, "&À propos"))
@@ -2751,15 +2799,6 @@ class Fenetre(wx.Frame):
         self.voix.dire(f"Suivi de la sortie {etat}.", interrompre=True)
         logging.info("Suivi de la sortie %s", etat)
 
-    def basculer_listing(self):
-        self.reglages.listing_lisible = not self.reglages.listing_lisible
-        self.item_listing.Check(self.reglages.listing_lisible)
-        enregistrer_reglages(self.reglages)
-        etat = "activé" if self.reglages.listing_lisible else "désactivé"
-        self.SetStatusText(f"Listing amélioré {etat}")
-        self.voix.dire(f"Listing amélioré {etat}.", interrompre=True)
-        logging.info("Listing amélioré %s", etat)
-
     def basculer_horodatage(self):
         self.reglages.afficher_horodatage = not self.reglages.afficher_horodatage
         self.item_horodatage.Check(self.reglages.afficher_horodatage)
@@ -2862,6 +2901,45 @@ class Fenetre(wx.Frame):
                 f"Le journal se trouve ici :\n{self.chemin_journal}",
                 "Journal", wx.OK | wx.ICON_INFORMATION,
             )
+
+    def verifier_mise_a_jour(self, silencieux: bool = False) -> None:
+        """Vérifie s'il existe une version plus récente sur GitHub.
+
+        silencieux=True pour la vérification automatique au démarrage :
+        ne dit rien si tout est déjà à jour ou si la vérification a
+        échoué (pas de réseau, GitHub inaccessible...), sur le même
+        principe de dégradation silencieuse que la DLL NVDA absente.
+        Depuis le menu Aide (silencieux=False), l'utilisateur a demandé
+        explicitement, donc on répond dans tous les cas.
+        """
+        def travailler():
+            resultat = _verifier_derniere_version()
+            wx.CallAfter(self._resultat_verification_maj, resultat, silencieux)
+
+        threading.Thread(target=travailler, daemon=True).start()
+
+    def _resultat_verification_maj(
+        self, resultat: tuple[str, str] | None, silencieux: bool,
+    ) -> None:
+        if resultat is None:
+            if not silencieux:
+                wx.MessageBox(
+                    f"Vous avez déjà la dernière version ({VERSION}).",
+                    "Mises à jour", wx.OK | wx.ICON_INFORMATION,
+                )
+                self.voix.dire("Vous avez déjà la dernière version.", interrompre=True)
+            return
+
+        version, url = resultat
+        logging.info("Nouvelle version disponible : %s", version)
+        self.voix.dire(f"Version {version} disponible.", interrompre=True)
+        if wx.MessageBox(
+            f"Une nouvelle version est disponible : {version} "
+            f"(vous avez la {VERSION}).\n\nOuvrir la page de téléchargement ?",
+            "Mise à jour disponible", wx.YES_NO | wx.ICON_INFORMATION,
+        ) == wx.YES:
+            import webbrowser
+            webbrowser.open(url)
 
     def a_propos(self):
         if self.voix.muet:
@@ -2978,7 +3056,7 @@ class Fenetre(wx.Frame):
             return
 
         if ctrl and maj and code == ord("N"):
-            self.basculer_listing()
+            self.creer_dossier_sftp()
             return
 
         if ctrl and maj and code == ord("H"):
@@ -3018,10 +3096,6 @@ class Fenetre(wx.Frame):
 
         if ctrl and maj and code == ord("F"):
             self.basculer_mode_sftp()
-            return
-
-        if ctrl and maj and code == ord("G"):
-            self.creer_dossier_sftp()
             return
 
         if ctrl and maj and code == ord("E"):

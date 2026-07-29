@@ -463,6 +463,41 @@ L'environnement Python est dans `venv`. Utiliser
   `sur_touche_globale`, qui vérifie déjà `panneau.mode_sftp` de son
   côté.
 
+- **Réglage « Listing amélioré » retiré, le mécanisme reste toujours
+  actif.** Devenu inutile comme option une fois le mode fichiers en
+  place : parcourir un dossier sans cette réécriture, c'est exactement
+  ce que le mode fichiers propose déjà. Item de menu, méthode
+  `basculer_listing()` et le réglage persistant `listing_lisible`
+  (settings.json) supprimés ; `PanneauSession.executer()` passe
+  maintenant `listing_lisible=True` en dur à `self.executeur.executer()`.
+  Libère Ctrl+Maj+N (plus mnémotechnique que l'ancien Ctrl+Maj+G) pour
+  « Nouveau dossier » en mode fichiers.
+
+- **Vérification des mises à jour, sans installation automatique.**
+  Choix délibéré face à un vrai auto-update silencieux (télécharger,
+  remplacer l'exe et `_internal` en cours d'exécution, relancer) : trop
+  de surface de pannes pour une appli portable sans installeur ni
+  signature de code (télécharger au mauvais moment, antivirus qui met
+  en quarantaine, écraser par erreur les fichiers de données qui vivent
+  à côté de l'exe) — et une mise à jour ratée est un bien pire scénario
+  qu'un simple oubli d'aller vérifier sur GitHub, surtout pour un
+  utilisateur non-voyant qui ne peut pas juger d'un coup d'œil que
+  quelque chose s'est mal passé. À la place : un appel à l'API GitHub
+  publique (`GET /repos/sofquipeut/lazyshell/releases/latest`, pas de
+  jeton nécessaire) qui compare le tag de la dernière Release à
+  `VERSION` (`_version_plus_recente`, comparaison numérique simple,
+  sans dépendance `packaging.version`). Vérification silencieuse une
+  fois au démarrage (`Fenetre.verifier_mise_a_jour(silencieux=True)`,
+  dans `__init__` après `Centre()`) : dégradation silencieuse volontaire
+  si pas de réseau ou si déjà à jour, même principe que la DLL NVDA
+  absente — un appel réseau qui échoue ne doit jamais inquiéter pour
+  une fonctionnalité de confort. Le menu Aide propose la même
+  vérification à la demande (`silencieux=False`), avec une réponse dans
+  tous les cas cette fois, y compris « déjà à jour ». Si une version
+  plus récente existe, une boîte de dialogue propose d'ouvrir la page
+  de la Release dans le navigateur (`webbrowser.open`) — rien de plus,
+  le téléchargement et la décompression restent manuels.
+
 ## Consignes de travail
 
 - Modifier par petites touches vérifiables, pas par réécritures massives :

@@ -26,8 +26,12 @@ Ce projet est né d'un besoin réel. Je n'aime pas du tout travailler en ligne d
 - Annonce vocale automatique via le client contrôleur NVDA, avec un second
   canal pour JAWS ; dégradation silencieuse si aucun des deux n'est présent.
 - Réglages persistants : verbosité de l'annonce, suivi automatique de la
-  sortie, listing amélioré (`dir`/`ls`), horodatage des blocs, taille de
-  police.
+  sortie, horodatage des blocs, taille de police.
+- Listing amélioré (`dir`/`ls`, nom de fichier en tête de ligne) toujours
+  actif, en local comme en SSH.
+- Vérification silencieuse des mises à jour au démarrage (menu Aide pour
+  la refaire à la demande) : aucune installation automatique, juste une
+  annonce s'il existe une version plus récente sur GitHub.
 
 ## Installation (utilisation simple, sans compiler)
 
@@ -71,9 +75,8 @@ Tout est également accessible depuis la barre de menus.
 | Ctrl+Tab / Ctrl+Maj+Tab | Session suivante / précédente |
 | Ctrl+1 à Ctrl+9 | Aller directement à une session |
 | Ctrl+Maj+D | Changer de répertoire courant |
-| Ctrl+Maj+F | Basculer entre terminal et mode fichiers (session SSH) |
 
-**Mode fichiers (SFTP)**
+**Mode fichiers (SFTP)** — actions grisées dans le menu Session hors mode fichiers
 
 | Touche | Action |
 |---|---|
@@ -81,7 +84,7 @@ Tout est également accessible depuis la barre de menus.
 | Retour arrière | Remonter au dossier parent |
 | F2 | Renommer l'élément sélectionné |
 | Suppr | Supprimer l'élément sélectionné (avec confirmation) |
-| Ctrl+Maj+G | Créer un dossier |
+| Ctrl+Maj+N | Créer un dossier |
 | Ctrl+Maj+E | Envoyer un fichier de cette machine vers le dossier affiché |
 | Ctrl+Maj+T | Télécharger l'élément sélectionné vers cette machine |
 
@@ -109,8 +112,8 @@ Tout est également accessible depuis la barre de menus.
 | Ctrl+Maj+R | Relire la saisie en cours |
 | Ctrl+Maj+V | Changer le niveau de verbosité vocale |
 | Ctrl+Maj+U | Aller automatiquement à la sortie après chaque commande |
-| Ctrl+Maj+N | Listing amélioré (nom de fichier en tête de ligne) |
 | Ctrl+Maj+H | Afficher ou masquer l'horodatage des blocs |
+| Ctrl+Maj+F | Basculer entre terminal et mode fichiers (session SSH) |
 
 ## Limites connues
 

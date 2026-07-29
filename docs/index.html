@@ -49,6 +49,7 @@ de fenêtre de console.</p>
   <li><a href="#raccourcis">Raccourcis clavier</a></li>
   <li><a href="#limites">Limites connues</a></li>
   <li><a href="#journal">Le journal</a></li>
+  <li><a href="#maj">Mises à jour</a></li>
 </ul>
 </nav>
 
@@ -81,13 +82,38 @@ au profit d'une liste des fichiers et dossiers du répertoire courant,
 parcourue aux flèches comme n'importe quel contrôle de liste. Un second
 Ctrl+Maj+F revient au terminal, au même répertoire.</p>
 
+<h3>Un exemple concret</h3>
+
+<p>Modifier un fichier de configuration sur un serveur distant, sans
+taper une seule ligne de commande — ni <code>cd</code>, ni <code>cat</code>,
+ni <code>nano</code>, ni <code>scp</code> :</p>
+
+<ol>
+<li>Ctrl+Maj+F pour passer en mode fichiers.</li>
+<li>Naviguer jusqu'au bon dossier aux flèches et Entrée (Retour arrière
+pour remonter en cas d'erreur de parcours) — la même liste, qu'on soit
+dans <code>/etc</code> ou dans le dossier personnel.</li>
+<li>Entrée sur le fichier : il s'ouvre directement dans le Bloc-notes de
+Windows, déjà lu couramment par NVDA.</li>
+<li>Modifier, enregistrer (Ctrl+S dans le Bloc-notes, comme d'habitude),
+fermer la fenêtre.</li>
+<li>LazyShell renvoie automatiquement le fichier modifié sur le
+serveur — rien à confirmer, rien à retaper.</li>
+</ol>
+
+<p>Même principe pour une copie de sauvegarde ou un transfert ponctuel :
+Ctrl+Maj+T télécharge l'élément sélectionné vers cette machine (un
+dossier entier si besoin, avec tout son contenu), Ctrl+Maj+E envoie un
+fichier de cette machine vers le dossier actuellement affiché. Plus
+besoin d'un client SFTP séparé pour ces allers-retours.</p>
+
 <table>
 <tr><th scope="col">Touche</th><th scope="col">Action</th></tr>
 <tr><td>Entrée</td><td>Ouvrir le dossier sélectionné, ou éditer le fichier sélectionné</td></tr>
 <tr><td>Retour arrière</td><td>Remonter au dossier parent</td></tr>
 <tr><td>F2</td><td>Renommer l'élément sélectionné</td></tr>
 <tr><td>Suppr</td><td>Supprimer l'élément sélectionné (avec confirmation)</td></tr>
-<tr><td>Ctrl+Maj+G</td><td>Créer un dossier</td></tr>
+<tr><td>Ctrl+Maj+N</td><td>Créer un dossier</td></tr>
 <tr><td>Ctrl+Maj+E</td><td>Envoyer un fichier de cette machine vers le dossier affiché</td></tr>
 <tr><td>Ctrl+Maj+T</td><td>Télécharger l'élément sélectionné vers cette machine</td></tr>
 </table>
@@ -136,7 +162,6 @@ corbeille côté serveur : une suppression SFTP est définitive.</p>
 <tr><td>Ctrl+Tab / Ctrl+Maj+Tab</td><td>Session suivante / précédente</td></tr>
 <tr><td>Ctrl+1 à Ctrl+9</td><td>Aller directement à une session</td></tr>
 <tr><td>Ctrl+Maj+D</td><td>Changer de répertoire courant</td></tr>
-<tr><td>Ctrl+Maj+F</td><td>Basculer entre terminal et mode fichiers (session SSH)</td></tr>
 </table>
 
 <h3>Commandes enregistrées</h3>
@@ -162,8 +187,8 @@ corbeille côté serveur : une suppression SFTP est définitive.</p>
 <tr><td>Ctrl+Maj+R</td><td>Relire la saisie en cours</td></tr>
 <tr><td>Ctrl+Maj+V</td><td>Changer le niveau de verbosité vocale</td></tr>
 <tr><td>Ctrl+Maj+U</td><td>Aller automatiquement à la sortie après chaque commande</td></tr>
-<tr><td>Ctrl+Maj+N</td><td>Listing amélioré (nom de fichier en tête de ligne)</td></tr>
 <tr><td>Ctrl+Maj+H</td><td>Afficher ou masquer l'horodatage des blocs</td></tr>
+<tr><td>Ctrl+Maj+F</td><td>Basculer entre terminal et mode fichiers (session SSH)</td></tr>
 </table>
 
 <h2 id="limites">Limites connues</h2>
@@ -189,6 +214,19 @@ l'exécutable (ou du script) : démarrage, sessions ouvertes, commandes,
 erreurs, et la trace complète de toute exception. Le menu Aide propose
 « Ouvrir le journal ». En cas de problème, copier les vingt dernières
 lignes suffit généralement à identifier la cause.</p>
+
+<h2 id="maj">Mises à jour</h2>
+
+<p>LazyShell vérifie en silence, une fois au démarrage, s'il existe une
+version plus récente sur GitHub. Si tout est déjà à jour ou que la
+vérification échoue (pas de réseau, GitHub inaccessible), rien n'est
+annoncé — seule une nouvelle version disponible déclenche une annonce et
+une boîte de dialogue proposant d'ouvrir la page de téléchargement.
+« Vérifier les mises à jour », dans le menu Aide, refait la même
+vérification à la demande, avec une réponse dans tous les cas (y compris
+« vous avez déjà la dernière version »). Aucune installation automatique :
+la nouvelle archive reste à télécharger et décompresser à la main, comme
+la toute première fois.</p>
 
 </body>
 </html>
