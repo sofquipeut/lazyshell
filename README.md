@@ -1,13 +1,11 @@
-# LazyShell
+# LazyShell, le terminal pour fainéants
 
-Terminal accessible pour Windows, pilotable entièrement au clavier et conçu
-pour NVDA (avec un second canal d'annonce pour JAWS). Il exécute des
+LazyShell est un terminal accessible pour Windows, pilotable entièrement au clavier et conçu
+principalement pour NVDA (avec un second canal d'annonce pour JAWS). Il exécute des
 commandes en local (PowerShell) et à distance par SSH, sans jamais ouvrir de
 fenêtre de console.
 
-Ce projet est né d'un besoin réel : un terminal utilisable par une personne
-non-voyante, avec un afficheur braille, qui n'utilise jamais la souris.
-L'accessibilité n'est pas une option ici, c'est le cahier des charges.
+Ce projet est né d'un besoin réel. Je n'aime pas du tout travailler en ligne de commandes. Mais j'avais besoin d'accéder en SSH à un VPS et pour régler les problèmes, il fallait sans cesse taper des lignes de commandes que l'IA ou Internet me fournissait. Et comme se rappeler de commandes interminables était trop compliqué pour moi, il me fallait un programme me permettant de les copier coller facilement ou de lire les sorties de commandes sans galérer.
 
 ## Fonctionnalités
 
@@ -17,14 +15,14 @@ L'accessibilité n'est pas une option ici, c'est le cahier des charges.
   son horodatage optionnel), navigables et copiables indépendamment.
 - Historique des commandes, détection des invites de saisie (mot de passe,
   confirmation) ouvrant une boîte de dialogue accessible.
-- SSH par Paramiko : profils de connexion, identifiants dans le
+- profils de connexion SSH, identifiants dans le
   Gestionnaire d'identifiants Windows, mémorisation de la clé d'hôte à la
   première connexion.
 - Mode fichiers (SSH) : navigateur SFTP accessible en liste (parcourir,
-  renommer, supprimer, créer un dossier), avec édition des fichiers dans
-  le Bloc-notes de Windows et renvoi automatique sur le serveur.
-- Commandes enregistrées : associer un nom à une commande longue tapée
-  régulièrement, pour l'insérer sans avoir à la retaper.
+  renommer, supprimer, créer un dossier, envoyer et télécharger), avec
+  édition des fichiers dans le Bloc-notes de Windows et renvoi
+  automatique sur le serveur.
+- Possibilité d'enregistrer de longues commandes fréquemment utilisées et de leur associer un nom explicite afin de les rappeler à partir d'une liste.
 - Annonce vocale automatique via le client contrôleur NVDA, avec un second
   canal pour JAWS ; dégradation silencieuse si aucun des deux n'est présent.
 - Réglages persistants : verbosité de l'annonce, suivi automatique de la
@@ -35,11 +33,7 @@ L'accessibilité n'est pas une option ici, c'est le cahier des charges.
 
 1. Télécharger la dernière version compilée depuis la page
    [Releases](../../releases) de ce dépôt et décompresser l'archive
-   n'importe où (une clé USB convient : rien ne s'installe dans le
-   système). Le dossier obtenu contient `LazyShell.exe`, un sous-dossier
-   `_internal` (les deux doivent rester ensemble) et un sous-dossier
-   `docs` (documentation HTML, aussi accessible depuis le menu Aide de
-   l'appli une fois lancée).
+   n'importe où (une clé USB convient : rien ne s'installe dans le système).
 2. Lancer `LazyShell.exe`.
 
 Le **client contrôleur NVDA**, nécessaire à l'annonce vocale automatique
@@ -52,29 +46,6 @@ l'exe) l'indique clairement au démarrage.
 Le canal JAWS, lui, est actif automatiquement si JAWS est installé et en
 cours d'exécution — aucun fichier à récupérer. Sa fiabilité n'a toutefois
 jamais été confirmée avec un JAWS réel (voir « Limites connues »).
-
-## Installation (pour modifier le code)
-
-Nécessite Python 3.11 ou 3.12.
-
-1. `installer.bat` — crée un environnement virtuel dans `venv` et installe
-   les dépendances (`requirements.txt`). Compter 2 à 4 minutes.
-2. `lancer.bat` — démarre l'application depuis les sources.
-3. `lancer_muet.bat` — identique, sans aucune annonce envoyée à NVDA : à
-   utiliser dès qu'on touche à la couche vocale, pour éviter une boucle de
-   parole incontrôlée.
-4. `compiler.bat` — produit l'application compilée dans `dist\LazyShell`
-   (via PyInstaller, mode dossier). C'est ce dossier complet qu'il faut
-   distribuer, jamais `LazyShell.exe` seul : il a besoin du sous-dossier
-   `_internal` à côté de lui. Le sous-dossier `docs` du dépôt y est copié
-   automatiquement. Pour que l'annonce vocale automatique fonctionne dans
-   l'exécutable produit, déposer au préalable le **client contrôleur
-   NVDA** (non fourni avec NVDA lui-même — archive `…controllerClient.zip`
-   publiée par NV Access sur `download.nvaccess.org`, fichier du dossier
-   **x64**) à la racine du dépôt, sous le nom `nvdaControllerClient64.dll`
-   ou `nvdaControllerClient.dll` : `compiler.bat` le détecte et le copie
-   à côté de `LazyShell.exe`. Sans lui, l'exécutable fonctionne quand même,
-   simplement sans annonce automatique.
 
 ## Raccourcis clavier
 
@@ -140,14 +111,6 @@ Tout est également accessible depuis la barre de menus.
 | Ctrl+Maj+U | Aller automatiquement à la sortie après chaque commande |
 | Ctrl+Maj+N | Listing amélioré (nom de fichier en tête de ligne) |
 | Ctrl+Maj+H | Afficher ou masquer l'horodatage des blocs |
-
-## Le journal
-
-Tout est consigné dans `lazyshell.log`, à côté de l'exécutable (ou du
-script) : démarrage, sessions ouvertes, commandes, erreurs, et la trace
-complète de toute exception. Le menu Aide propose « Ouvrir le journal ».
-En cas de problème, copier les vingt dernières lignes suffit généralement
-à identifier la cause.
 
 ## Limites connues
 
