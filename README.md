@@ -1,49 +1,44 @@
 # LazyShell, le terminal pour fainéants
 
-LazyShell est un terminal accessible pour Windows, pilotable entièrement au clavier et conçu
-principalement pour NVDA (avec un second canal d'annonce pour JAWS). Il exécute des
+LazyShell est un terminal et un navigateur SSH/SFTP accessible pour Windows, pilotable entièrement au clavier et conçu
+principalement pour une utilisation avec NVDA (plus un second canal d'annonce pour JAWS). Il exécute des
 commandes en local (PowerShell) et à distance par SSH, sans jamais ouvrir de
 fenêtre de console.
 
-Ce projet est né d'un besoin réel. Je n'aime pas du tout travailler en ligne de commandes. Mais j'avais besoin d'accéder en SSH à un VPS et pour régler les problèmes, il fallait sans cesse taper des lignes de commandes que l'IA ou Internet me fournissait. Et comme se rappeler de commandes interminables était trop compliqué pour moi, il me fallait un programme me permettant de les copier coller facilement ou de lire les sorties de commandes sans galérer.
+Ce projet est né d'un besoin réel. Je n'aime pas du tout travailler en ligne de commandes. Mais j'avais besoin d'accéder en SSH à un VPS et pour régler les problèmes, il fallait sans cesse taper des lignes de commandes que l'IA ou Internet me fournissait. Et comme se rappeler de commandes interminables était trop compliqué pour moi, il me fallait un programme me permettant de les copier coller facilement ou de lire les sorties de commandes sans galérer comme avec l'invite de commandes Windows ou tous les autres programmes similaires que j'ai pu testé.
+De plus, j'utilisais WinSCP en parallèle pour parcourir un serveur distant, afin d'éditer ou transférer des fichiers. Désormais, plus besoin de WinSCP, LazyShell fait le job, c'est du tout en un ! Grâce au vibe-coding, ce besoin a été comblé en quelques jours.
 
 ## Fonctionnalités
-
-- Sessions multiples par onglets, locales ou SSH, exécutées en tâche de
-  fond : l'interface ne se fige jamais pendant qu'une commande tourne.
+- Une vraie zone de saisie et un champ de sortie bien standards dans lesquels on peut utiliser les commandes de sélection et de copier-coller habituelles. 
+- Possibilité de de créer des sessions multiples par onglets, locales ou SSH et on peut passer de l'ne à l'autre instantanément au clavier en sachant toujours dans laquelle on se trouve, tout est vocalisé et indiqué en braille
 - Sortie découpée en blocs (une commande, sa sortie, son code de retour,
-  son horodatage optionnel), navigables et copiables indépendamment.
+  son horodatage optionnel), navigables et copiables indépendamment. Ces blocs sont également accessibles à partir d'une liste.
 - Historique des commandes, détection des invites de saisie (mot de passe,
   confirmation) ouvrant une boîte de dialogue accessible.
 - profils de connexion SSH, identifiants dans le
   Gestionnaire d'identifiants Windows, mémorisation de la clé d'hôte à la
   première connexion.
-- Mode fichiers (SSH) : navigateur SFTP accessible en liste (parcourir,
-  renommer, supprimer, créer un dossier, envoyer et télécharger), avec
+- Mode fichiers (SSH) : navigateur SFTP accessible en liste, similaire à l'explorateur Windows, pour parcourir,
+  renommer, supprimer, créer un dossier, envoyer et télécharger, avec
   édition des fichiers dans le Bloc-notes de Windows et renvoi
   automatique sur le serveur.
 - Possibilité d'enregistrer de longues commandes fréquemment utilisées et de leur associer un nom explicite afin de les rappeler à partir d'une liste.
-- Annonce vocale automatique via le client contrôleur NVDA, avec un second
-  canal pour JAWS ; dégradation silencieuse si aucun des deux n'est présent.
-- Réglages persistants : verbosité de l'annonce, suivi automatique de la
-  sortie, horodatage des blocs, taille de police.
+- Tout action ou confirmation est énoncée automatiquement par NVDA via le client contrôleur de ce dernier, s'il est installé, avec possibilité d'agir sur la verbosité de ces annonces.
 - Listing amélioré (`dir`/`ls`, nom de fichier en tête de ligne) toujours
   actif, en local comme en SSH.
 - Vérification silencieuse des mises à jour au démarrage (menu Aide pour
-  la refaire à la demande) : aucune installation automatique, juste une
-  annonce s'il existe une version plus récente sur GitHub.
+  la refaire à la demande).
 
-## Installation (utilisation simple, sans compiler)
+## Installation
 
-1. Télécharger la dernière version compilée depuis la page
+1. Télécharger la dernière version depuis la page
    [Releases](../../releases) de ce dépôt et décompresser l'archive
    n'importe où (une clé USB convient : rien ne s'installe dans le système).
 2. Lancer `LazyShell.exe`.
 
 Le **client contrôleur NVDA**, nécessaire à l'annonce vocale automatique
 via NVDA, est déjà inclus dans l'archive : rien à récupérer séparément.
-S'il venait à manquer (compilation locale sans la DLL, voir plus bas),
-l'application démarre et fonctionne normalement : seule l'annonce
+S'il venait à manquer, l'application démarre et fonctionne normalement : seule l'annonce
 automatique est inactive, et le journal (`lazyshell.log`, à côté de
 l'exe) l'indique clairement au démarrage.
 
@@ -76,7 +71,7 @@ Tout est également accessible depuis la barre de menus.
 | Ctrl+1 à Ctrl+9 | Aller directement à une session |
 | Ctrl+Maj+D | Changer de répertoire courant |
 
-**Mode fichiers (SFTP)** — actions grisées dans le menu Session hors mode fichiers
+**Mode fichiers (SFTP)
 
 | Touche | Action |
 |---|---|
@@ -85,8 +80,8 @@ Tout est également accessible depuis la barre de menus.
 | F2 | Renommer l'élément sélectionné |
 | Suppr | Supprimer l'élément sélectionné (avec confirmation) |
 | Ctrl+Maj+N | Créer un dossier |
-| Ctrl+Maj+E | Envoyer un fichier de cette machine vers le dossier affiché |
-| Ctrl+Maj+T | Télécharger l'élément sélectionné vers cette machine |
+| Ctrl+Maj+E | Envoyer un fichier vers le dossier distant affiché |
+| Ctrl+Maj+T | Télécharger l'élément sélectionné |
 
 **Commandes enregistrées**
 
