@@ -1174,6 +1174,16 @@ L'environnement Python est dans `venv`. Utiliser
   pendant un transfert : cette boîte-ci n'a pas cette même contrainte
   vérifiée à l'usage, pas de raison de lui imposer la même rigidité.
 
+- **Version 1.5.0.** Regroupe tout ce qui précède depuis la 1.4.0 :
+  lien vers le dépôt GitHub et auteur dans le menu Aide/« À propos »,
+  corrections d'orthographe du README, et la nouvelle recherche
+  récursive de fichiers en mode navigation (Ctrl+Maj+G), rapide (`find`
+  distant, un seul aller-retour réseau) et avec résultats affichés en
+  temps réel. (L'essai puis l'abandon du presse-papiers façon WinSCP
+  pour Ctrl+C/Ctrl+V n'apparaît pas ici : revenu en arrière avant
+  publication, aucun effet net pour l'utilisateur — voir plus haut dans
+  ce journal pour le détail.)
+
 ## Idées à reprendre plus tard
 
 Notées en passant, pas encore faites — pas de quoi se précipiter dessus
