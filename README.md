@@ -18,10 +18,18 @@ Ce projet est né d'un besoin réel. Je n'aime pas du tout travailler en ligne d
 - profils de connexion SSH, identifiants dans le
   Gestionnaire d'identifiants Windows, mémorisation de la clé d'hôte à la
   première connexion.
-- Mode fichiers (SSH) : navigateur SFTP accessible en liste (parcourir,
+- Mode navigation (SSH) : navigateur SFTP accessible en liste (parcourir,
   renommer, supprimer, créer un dossier, envoyer et télécharger), avec
   édition des fichiers dans le Bloc-notes de Windows et renvoi
-  automatique sur le serveur.
+  automatique sur le serveur. Envois et téléchargements traités un par
+  un, avec une fenêtre de progression modale (nom du fichier en cours,
+  pourcentage, vitesse, bouton Annuler) qui bloque le reste de
+  l'application jusqu'à la fin du transfert, et des dossiers favoris
+  nommés par profil SSH (nom explicite et chemin, comme les commandes
+  enregistrées) pour y sauter directement.
+- Reconnexion proposée automatiquement si la connexion SSH tombe en
+  cours de session (mot de passe redemandé seulement s'il n'est pas
+  déjà mémorisé), sans perdre l'historique de la session en cours.
 - Possibilité d'enregistrer de longues commandes fréquemment utilisées et de leur associer un nom explicite afin de les rappeler à partir d'une liste.
 - Annonce vocale automatique via le client contrôleur NVDA, avec un second
   canal pour JAWS ; dégradation silencieuse si aucun des deux n'est présent.
@@ -75,8 +83,9 @@ Tout est également accessible depuis la barre de menus.
 | Ctrl+Tab / Ctrl+Maj+Tab | Session suivante / précédente |
 | Ctrl+1 à Ctrl+9 | Aller directement à une session |
 | Ctrl+Maj+D | Changer de répertoire courant |
+| Ctrl+Maj+A | Favoris (dossiers distants, par profil SSH) |
 
-**Mode fichiers (SFTP)** — actions grisées dans le menu Session hors mode fichiers
+**Mode navigation (SFTP)** — actions grisées dans le menu Session hors mode navigation
 
 | Touche | Action |
 |---|---|
@@ -113,7 +122,7 @@ Tout est également accessible depuis la barre de menus.
 | Ctrl+Maj+V | Changer le niveau de verbosité vocale |
 | Ctrl+Maj+U | Aller automatiquement à la sortie après chaque commande |
 | Ctrl+Maj+H | Afficher ou masquer l'horodatage des blocs |
-| Ctrl+Maj+F | Basculer entre terminal et mode fichiers (session SSH) |
+| Ctrl+Maj+F | Basculer entre terminal et mode navigation (session SSH) |
 
 ## Limites connues
 

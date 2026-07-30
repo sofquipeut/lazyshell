@@ -45,7 +45,7 @@ de fenêtre de console.</p>
 <nav aria-label="Sommaire">
 <ul>
   <li><a href="#fonctionnement">Fonctionnement général</a></li>
-  <li><a href="#fichiers">Mode fichiers (SFTP)</a></li>
+  <li><a href="#navigation">Mode navigation (SFTP)</a></li>
   <li><a href="#raccourcis">Raccourcis clavier</a></li>
   <li><a href="#limites">Limites connues</a></li>
   <li><a href="#journal">Le journal</a></li>
@@ -74,7 +74,13 @@ Le nom de la session figure dans le nom accessible des champs de saisie
 et de sortie, pour éviter de taper une commande dans la mauvaise
 session.</p>
 
-<h2 id="fichiers">Mode fichiers (SFTP)</h2>
+<p>Si une connexion SSH tombe (réseau coupé, VPN interrompu...), la
+prochaine commande envoyée le détecte et propose de se reconnecter — le
+mot de passe n'est redemandé que s'il n'est pas déjà mémorisé dans le
+Gestionnaire d'identifiants Windows. La session continue ensuite dans
+le même onglet, avec son historique intact : rien à rouvrir.</p>
+
+<h2 id="navigation">Mode navigation (SFTP)</h2>
 
 <p>Une session SSH peut basculer (Ctrl+Maj+F) entre le terminal habituel
 et un navigateur de fichiers distant : la saisie et la sortie disparaissent
@@ -89,7 +95,7 @@ taper une seule ligne de commande — ni <code>cd</code>, ni <code>cat</code>,
 ni <code>nano</code>, ni <code>scp</code> :</p>
 
 <ol>
-<li>Ctrl+Maj+F pour passer en mode fichiers.</li>
+<li>Ctrl+Maj+F pour passer en mode navigation.</li>
 <li>Naviguer jusqu'au bon dossier aux flèches et Entrée (Retour arrière
 pour remonter en cas d'erreur de parcours) — la même liste, qu'on soit
 dans <code>/etc</code> ou dans le dossier personnel.</li>
@@ -116,7 +122,51 @@ besoin d'un client SFTP séparé pour ces allers-retours.</p>
 <tr><td>Ctrl+Maj+N</td><td>Créer un dossier</td></tr>
 <tr><td>Ctrl+Maj+E</td><td>Envoyer un fichier de cette machine vers le dossier affiché</td></tr>
 <tr><td>Ctrl+Maj+T</td><td>Télécharger l'élément sélectionné vers cette machine</td></tr>
+<tr><td>Ctrl+Maj+A</td><td>Favoris (dossiers distants, par profil SSH)</td></tr>
 </table>
+
+<p>Dès qu'un envoi ou un téléchargement démarre, une fenêtre de
+progression modale s'ouvre automatiquement et prend le pas sur le reste
+de l'application : impossible de continuer à travailler dans LazyShell
+tant que le transfert n'est pas terminé. Ce choix est délibéré — une
+première version, discrète et toujours au premier plan sans bloquer,
+ne se faisait pas remarquer et ses annonces vocales périodiques,
+interrompues sans prévenir, n'apportaient rien d'exploitable. Le focus
+modal fait lire l'état par NVDA normalement, comme n'importe quelle
+autre boîte de dialogue de l'application.</p>
+
+<p>Le titre de la fenêtre porte le pourcentage et le nom du fichier en
+train de passer, sous la forme « 42% fichier.bin » ; sur un dossier, il
+se met à jour fichier par fichier au fur et à mesure (un seul transfert
+à la fois : le canal utilisé pour parcourir les dossiers ne se prête
+pas à plusieurs opérations en même temps). La zone de texte complète ce
+titre avec l'état et la vitesse, sans répéter le pourcentage. Cette
+progression n'est pas annoncée vocalement en continu — seuls le
+démarrage et la fin du transfert le sont : le titre et la zone de
+texte, mis à jour en temps réel, suffisent pour suivre l'avancement
+(braille compris, qui reflète le contenu du champ focalisé sans qu'il
+soit besoin de le faire dire). Elle ne peut pas être fermée par Échap
+ni par la croix tant que le transfert n'a pas atteint un état final
+(terminé, échoué ou annulé) — c'est le seul moyen de le suivre ou de
+l'annuler pendant ce temps, la faire disparaître par erreur laisserait
+le transfert continuer sans plus aucune prise dessus. Le bouton Fermer
+ne s'active qu'une fois ce point atteint.</p>
+
+<p>Le bouton Annuler de cette fenêtre arrête le transfert en cours en
+coupant le canal immédiatement, puis ferme la fenêtre dans le même
+geste — pas besoin de cliquer ensuite sur Fermer. Le fichier reçu ou
+envoyé jusque-là reste sur place, incomplet : à supprimer à la main si
+besoin, ce n'est pas fait automatiquement.</p>
+
+<p>Les favoris (Ctrl+Maj+A) retiennent des dossiers distants fréquents,
+propres à chaque profil SSH, chacun avec un nom explicite en plus du
+chemin — sur le même principe que les commandes enregistrées. Le
+dossier actuellement affiché peut être ajouté aux favoris en un geste
+(son chemin est déjà rempli, il ne reste qu'à donner un nom) ; les
+favoris existants peuvent aussi être renommés ou voir leur chemin
+modifié après coup. Plus besoin de reparcourir depuis le dossier de
+connexion à chaque fois pour atteindre un dossier qu'on visite tous les
+jours.</p>
 
 <p>Éditer un fichier (Entrée) le télécharge dans un dossier temporaire et
 l'ouvre dans le Bloc-notes de Windows. LazyShell attend la fermeture du
@@ -188,7 +238,7 @@ corbeille côté serveur : une suppression SFTP est définitive.</p>
 <tr><td>Ctrl+Maj+V</td><td>Changer le niveau de verbosité vocale</td></tr>
 <tr><td>Ctrl+Maj+U</td><td>Aller automatiquement à la sortie après chaque commande</td></tr>
 <tr><td>Ctrl+Maj+H</td><td>Afficher ou masquer l'horodatage des blocs</td></tr>
-<tr><td>Ctrl+Maj+F</td><td>Basculer entre terminal et mode fichiers (session SSH)</td></tr>
+<tr><td>Ctrl+Maj+F</td><td>Basculer entre terminal et mode navigation (session SSH)</td></tr>
 </table>
 
 <h2 id="limites">Limites connues</h2>
