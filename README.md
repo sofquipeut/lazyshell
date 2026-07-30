@@ -5,17 +5,17 @@ principalement pour une utilisation avec NVDA (plus un second canal d'annonce po
 commandes en local (PowerShell) et à distance par SSH, sans jamais ouvrir de
 fenêtre de console.
 
-Ce projet est né d'un besoin réel. Je n'aime pas du tout travailler en ligne de commandes. Mais j'avais besoin d'accéder en SSH à un VPS et pour régler les problèmes, il fallait sans cesse taper des lignes de commandes que l'IA ou Internet me fournissait. Et comme se rappeler de commandes interminables était trop compliqué pour moi, il me fallait un programme me permettant de les copier coller facilement ou de lire les sorties de commandes sans galérer comme avec l'invite de commandes Windows ou tous les autres programmes similaires que j'ai pu testé.
+Ce projet est né d'un besoin réel. Je n'aime pas du tout travailler en ligne de commandes. Mais j'avais besoin d'accéder en SSH à un VPS et pour régler les problèmes, il fallait sans cesse taper des lignes de commandes que l'IA ou Internet me fournissait. Et comme se rappeler de commandes interminables était trop compliqué pour moi, il me fallait un programme me permettant de les copier-coller facilement ou de lire les sorties de commandes sans galérer comme avec l'invite de commandes Windows ou tous les autres programmes similaires que j'ai pu tester.
 De plus, j'utilisais WinSCP en parallèle pour parcourir un serveur distant, afin d'éditer ou transférer des fichiers. Désormais, plus besoin de WinSCP, LazyShell fait le job, c'est du tout en un ! Grâce au vibe-coding, ce besoin a été comblé en quelques jours.
 
 ## Fonctionnalités
-- Une vraie zone de saisie et un champ de sortie bien standards dans lesquels on peut utiliser les commandes de sélection et de copier-coller habituelles. 
-- Possibilité de de créer des sessions multiples par onglets, locales ou SSH et on peut passer de l'ne à l'autre instantanément au clavier en sachant toujours dans laquelle on se trouve, tout est vocalisé et indiqué en braille
+- Une vraie zone de saisie et un champ de sortie bien standards dans lesquels on peut utiliser les commandes de sélection et de copier-coller habituelles.
+- Possibilité de créer des sessions multiples par onglets, locales ou SSH et on peut passer de l'une à l'autre instantanément au clavier en sachant toujours dans laquelle on se trouve, tout est vocalisé et indiqué en braille
 - Sortie découpée en blocs (une commande, sa sortie, son code de retour,
   son horodatage optionnel), navigables et copiables indépendamment. Ces blocs sont également accessibles à partir d'une liste.
 - Historique des commandes, détection des invites de saisie (mot de passe,
   confirmation) ouvrant une boîte de dialogue accessible.
-- profils de connexion SSH, identifiants dans le
+- Profils de connexion SSH, identifiants dans le
   Gestionnaire d'identifiants Windows, mémorisation de la clé d'hôte à la
   première connexion.
 - Mode navigation (SSH) : navigateur SFTP accessible en liste, similaire à l'explorateur Windows, pour parcourir,
@@ -31,7 +31,7 @@ De plus, j'utilisais WinSCP en parallèle pour parcourir un serveur distant, afi
   cours de session (mot de passe redemandé seulement s'il n'est pas
   déjà mémorisé), sans perdre l'historique de la session en cours.
 - Possibilité d'enregistrer de longues commandes fréquemment utilisées et de leur associer un nom explicite afin de les rappeler à partir d'une liste.
-- Tout action ou confirmation est énoncée automatiquement par NVDA via le client contrôleur de ce dernier, s'il est installé, avec possibilité d'agir sur la verbosité de ces annonces.
+- Toute action ou confirmation est énoncée automatiquement par NVDA via le client contrôleur de ce dernier, s'il est installé, avec possibilité d'agir sur la verbosité de ces annonces.
 - Listing amélioré (`dir`/`ls`, nom de fichier en tête de ligne) toujours
   actif, en local comme en SSH.
 - Vérification silencieuse des mises à jour au démarrage (menu Aide pour
@@ -132,6 +132,10 @@ Tout est également accessible depuis la barre de menus.
   l'identifiant COM et les noms de méthode utilisés viennent des
   références les plus courantes sur l'automatisation JAWS, pas d'une
   confirmation. Le canal NVDA, lui, est indépendant et validé.
+
+## Auteur
+
+Sof — hellosof@gmail.com
 
 ## Licence
 

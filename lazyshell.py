@@ -48,6 +48,12 @@ VERSION = "1.4.0"
 
 # Dépôt GitHub public du projet, pour la vérification des mises à jour.
 URL_DERNIERE_RELEASE = "https://api.github.com/repos/sofquipeut/lazyshell/releases/latest"
+# Page du dépôt lui-même (pas l'API), pour l'ouvrir dans le navigateur
+# depuis le menu Aide.
+URL_DEPOT = "https://github.com/sofquipeut/lazyshell"
+
+AUTEUR_NOM = "Sof"
+AUTEUR_COURRIEL = "hellosof@gmail.com"
 
 # Niveaux de verbosité de l'annonce vocale
 VERBOSITE_RESUME = 0
@@ -3007,6 +3013,9 @@ class Fenetre(wx.Frame):
                   lambda e: self.verifier_mise_a_jour(silencieux=False),
                   m_aide.Append(wx.ID_ANY, "&Vérifier les mises à jour"))
         self.Bind(wx.EVT_MENU,
+                  lambda e: self.ouvrir_depot_github(),
+                  m_aide.Append(wx.ID_ANY, "&Dépôt GitHub"))
+        self.Bind(wx.EVT_MENU,
                   lambda e: self.a_propos(),
                   m_aide.Append(wx.ID_ABOUT, "&À propos"))
         barre.Append(m_aide, "&Aide")
@@ -3581,6 +3590,11 @@ class Fenetre(wx.Frame):
                 "Journal", wx.OK | wx.ICON_INFORMATION,
             )
 
+    def ouvrir_depot_github(self):
+        """Ouvre la page du dépôt GitHub dans le navigateur par défaut."""
+        import webbrowser
+        webbrowser.open(URL_DEPOT)
+
     def verifier_mise_a_jour(self, silencieux: bool = False) -> None:
         """Vérifie s'il existe une version plus récente sur GitHub.
 
@@ -3632,6 +3646,8 @@ class Fenetre(wx.Frame):
             etat = f"active ({', '.join(canaux)})" if canaux else "aucun lecteur d'écran détecté"
         wx.MessageBox(
             f"{APP_NOM}\nVersion {VERSION}\n\n"
+            f"Auteur : {AUTEUR_NOM} ({AUTEUR_COURRIEL})\n"
+            f"Dépôt GitHub : {URL_DEPOT}\n\n"
             f"Annonce vocale : {etat}\n"
             f"Journal : {self.chemin_journal}",
             "À propos", wx.OK | wx.ICON_INFORMATION,
