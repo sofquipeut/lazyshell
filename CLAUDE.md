@@ -1049,6 +1049,109 @@ L'environnement Python est dans `venv`. Utiliser
   cours de route), l'annonce vocale à chaque étape, et la navigation
   effective vers un résultat trouvé en profondeur.
 
+- **Recherche de fichiers, revue après un retour direct sur la
+  première version (jamais testée en conditions réelles) : trop
+  lente, aucun résultat visible avant la toute fin, Annuler ne
+  fermait pas la boîte.** Trois défauts distincts, corrigés ensemble :
+
+  *Lenteur* : `ExecuteurSSH.rechercher_fichiers` parcourait
+  l'arborescence dossier par dossier via SFTP (`lister_repertoire`),
+  soit un aller-retour réseau par dossier exploré — inévitablement
+  lent sur une arborescence profonde dès qu'il y a de la latence.
+  Remplacé entièrement par la commande `find` distante, exécutée sur
+  un canal `exec_command` dédié (comme `executer()`, mais sans repasser
+  par toute sa logique propre au terminal — pas de détection d'invite
+  ni de troncature de sortie, hors sujet ici) : un seul aller-retour
+  réseau, dont la sortie (`find <racine> -iname '*motif*' -printf
+  '%y\t%s\t%p\n' 2>/dev/null`) arrive en flux, lu ligne par ligne au
+  fil de l'eau plutôt qu'attendue en bloc. Suppose un find GNU
+  (coreutils) sur le serveur, déjà une hypothèse existante de cette
+  appli pour le listing amélioré (`reecrire_listing`, qui utilise déjà
+  `find -printf`) — pas une nouvelle dépendance. `-iname` gère
+  nativement l'insensibilité à la casse et ignore par défaut les liens
+  symboliques (jamais suivis sans `-L`) : plus de parcours récursif ni
+  de garde anti-boucle à écrire à la main côté Python. Conséquence
+  acceptée : un lien vers un dossier remonte comme un simple lien, pas
+  comme un dossier (sa cible n'est jamais résolue, pour ne pas
+  ralentir la recherche pour ce cas marginal) — « Aller au résultat »
+  sur un tel lien ouvre donc son dossier parent avec le lien
+  sélectionné, pas le contenu du dossier ciblé. Un dossier illisible en
+  cours de route (droits refusés) est ignoré par find lui-même (stderr
+  vers `/dev/null`), qui continue sur le reste — aucune gestion
+  particulière à écrire côté appelant, contrairement à l'ancienne
+  version qui devait explicitement rattraper l'exception dossier par
+  dossier. Le motif tapé passe par `shlex.quote()` avant d'entrer dans
+  la commande shell distante : nécessaire puisqu'il vient directement
+  de la saisie utilisateur et atterrit dans une commande exécutée par
+  un vrai shell distant — sans cet échappement, un motif contenant par
+  exemple `; rm -rf /` s'exécuterait tel quel côté serveur. Vérifié par
+  un test isolé avec un faux `find` qui tente cette injection
+  précise : le motif dangereux ressort bien comme un seul argument
+  shell entre quotes, jamais comme une commande séparée.
+
+  Annulation revue en conséquence : `ExecuteurSSH.annuler_recherche()`
+  ferme le canal `exec_command` depuis l'extérieur — même principe
+  qu'`annuler_transfert()` pour un transfert de fichier — ce qui
+  débloque le `recv()` en cours côté thread de fond. Nouvel attribut
+  `_canal_recherche`, à côté de `_canal_transfert` (même bookkeeping,
+  remis à `None` dans `fermer()`).
+
+  *Aucun résultat avant la fin* : `rechercher_fichiers` ne renvoyait
+  qu'une liste complète, une fois le parcours entièrement terminé.
+  Nouveau contrat : `sur_resultat(chemin, dossier, lien, taille)`
+  appelé pour chaque ligne au fil de l'eau. Côté
+  `DialogueRechercheFichiers`, les résultats passent par une
+  `queue.Queue` (remplie depuis le thread de fond) vidée par un
+  `wx.Timer` démarré à chaque recherche (150 ms) plutôt qu'un
+  `wx.CallAfter` par résultat individuel — plus réactif qu'un
+  `CallAfter` par résultat sur une arborescence à beaucoup de
+  correspondances, sans inonder le thread principal. Le focus se
+  déplace sur la liste de résultats dès le lancement de la recherche
+  (plus à l'ouverture de la boîte ni en fin de recherche) : c'est elle
+  qui se remplit en direct, plus utile à suivre que de rester sur le
+  bouton Rechercher pendant que ça travaille. Le statut affiche
+  maintenant le nombre de résultats trouvés jusqu'ici et le temps
+  écoulé (plutôt que « N dossiers explorés », qui n'a plus de sens
+  avec `find` : il n'y a plus de notion de dossier visité un par un
+  côté appelant) — mis à jour à chaque nouveau résultat, ou au moins
+  chaque seconde pour rester un signe de vie même sur une recherche
+  sans aucune correspondance pendant un long moment.
+
+  *Annuler ne fermait pas la boîte* : il ne faisait qu'arrêter la
+  recherche, laissant la boîte ouverte — il fallait ensuite cliquer
+  sur Fermer séparément. Corrigé sur le même principe que
+  `DialogueProgression` pour un transfert : le bouton Annuler appelle
+  `EndModal(wx.ID_CANCEL)` juste après avoir demandé l'annulation,
+  fermant la boîte dans le même geste (le focus revient alors à la
+  liste de navigation principale, déjà géré par
+  `Fenetre.rechercher_fichiers_sftp` après `ShowModal()`). Échap et la
+  croix, eux, refusent toujours de fermer tant qu'une recherche est en
+  cours — même logique que `DialogueProgression`, Annuler reste le
+  seul moyen explicite de l'interrompre.
+
+  Corrigé au passage, repéré à la seule lecture du code (jamais
+  constaté à l'usage, mais un bug plausible de ce genre de boîte) : le
+  focus posé sur le champ de motif directement dans `__init__`, avant
+  l'affichage réel de la boîte par `ShowModal()`, risque de ne pas
+  « tenir » — Windows repositionne parfois le focus une fois la boîte
+  devenue visible, un piège wx déjà connu. Posé maintenant via
+  `wx.CallAfter(self.champ_motif.SetFocus)`.
+
+  Vérifié par des reproductions isolées jetables (toujours sans
+  connexion SSH réelle) : parsing du flux `find` avec des morceaux
+  reçus n'importe où, y compris coupés en plein milieu d'une ligne
+  (robustesse du tampon inter-paquets) ; échappement d'un motif
+  contenant une tentative d'injection shell ; annulation qui interrompt
+  bien un flux en cours en moins d'une seconde plutôt que d'attendre
+  la fin ; et, côté boîte de dialogue, un vrai `wx.MainLoop()` borné
+  (`wx.CallLater`) montrant des résultats déjà visibles dans la liste
+  pendant que la recherche tourne encore, puis un Annuler qui ferme
+  bien la boîte dans le même geste. Reste à vérifier en conditions
+  réelles avec NVDA et un vrai serveur : la vitesse ressentie sur une
+  arborescence réelle, le focus qui atterrit bien sur le champ de
+  motif à l'ouverture, et celui qui se déplace bien sur la liste dès
+  Entrée pressée dans ce champ.
+
 ## Idées à reprendre plus tard
 
 Notées en passant, pas encore faites — pas de quoi se précipiter dessus

@@ -277,6 +277,10 @@ class ExecuteurSSH:
         # depuis l'extérieur en le fermant — même principe que _canal
         # pour interrompre() sur une commande.
         self._canal_transfert = None
+        # Canal exec (find) de la recherche de fichiers en cours, même
+        # principe que _canal_transfert : annuler_recherche() le ferme
+        # depuis l'extérieur pour l'interrompre.
+        self._canal_recherche = None
         self._verrou = threading.Lock()
         # Le canal SFTP partagé de la navigation (_sftp_persistant) n'est
         # pas thread-safe : deux appels concurrents (par exemple deux
@@ -386,6 +390,7 @@ class ExecuteurSSH:
             client, self._client = self._client, None
             sftp, self._sftp = self._sftp, None
             self._canal_transfert = None
+            self._canal_recherche = None
         if sftp is not None:
             sftp.close()
         if client is not None:
@@ -467,67 +472,96 @@ class ExecuteurSSH:
         self,
         chemin_racine: str,
         motif: str,
-        sur_dossier_explore: Callable[[str], None] | None = None,
-        doit_annuler: Callable[[], bool] | None = None,
-    ) -> list[tuple[str, EntreeDistante]]:
+        sur_resultat: Callable[[str, bool, bool, int], None] | None = None,
+    ) -> None:
         """Recherche récursive, insensible à la casse, des fichiers et
         dossiers dont le nom contient motif, à partir de chemin_racine.
-        Bloque : à appeler hors thread principal. Renvoie une liste de
-        (chemin_complet, entrée), dans l'ordre de parcours.
+        Bloque jusqu'à la fin du flux ou jusqu'à annuler_recherche() : à
+        appeler hors thread principal.
 
-        Ne suit jamais un lien vers un dossier : le protocole SFTP ne
-        donne aucune garantie qu'un lien ne se referme pas sur un de ses
-        propres ancêtres, ce qui bouclerait indéfiniment.
+        Passe par la commande find distante plutôt que par un parcours
+        SFTP dossier par dossier (essayé d'abord) : un seul aller-retour
+        réseau, dont la sortie arrive en flux ligne par ligne, au lieu
+        d'un aller-retour par dossier exploré — bien plus rapide sur une
+        arborescence profonde dès qu'il y a de la latence réseau, et les
+        résultats peuvent remonter au fil de l'eau plutôt qu'une seule
+        fois à la toute fin. Suppose un find GNU (coreutils) sur le
+        serveur distant, déjà une hypothèse existante de cette appli
+        pour le listing amélioré (reecrire_listing, -printf). `-iname`
+        gère nativement l'insensibilité à la casse et ignore par défaut
+        les liens symboliques (jamais suivis sans l'option -L) — pas de
+        risque de boucler sur un lien qui se referme sur un ancêtre ;
+        conséquence acceptée, un lien vers un dossier est donc rapporté
+        comme un lien simple, pas comme un dossier (aucun appel
+        supplémentaire pour résoudre sa cible, ce qui ralentirait la
+        recherche pour un cas marginal). Un dossier illisible en cours
+        de route (droits refusés) est simplement ignoré par find
+        lui-même (stderr redirigé vers /dev/null), qui continue sur le
+        reste de l'arborescence — pas de gestion particulière à faire
+        ici.
 
-        Un dossier illisible (droits refusés en cours de route) est
-        ignoré plutôt que d'interrompre toute la recherche : la même
-        philosophie que sur_dossier_explore côté appelant, plus utile
-        qu'un échec complet pour une seule branche inaccessible de
-        l'arborescence.
-
-        sur_dossier_explore(chemin), si fourni, est appelé à chaque
-        dossier visité — un signe de vie pendant un parcours profond, où
-        aucun résultat ne remonterait sinon avant la toute fin.
-        doit_annuler(), si fourni et qu'il renvoie True, arrête le
-        parcours au prochain dossier : les résultats déjà trouvés sont
-        renvoyés tels quels, une recherche annulée n'est pas un échec.
+        sur_resultat(chemin, dossier, lien, taille) est appelé pour
+        chaque résultat, dans l'ordre où find les renvoie — pas de
+        valeur de retour, contrairement à l'ancienne version SFTP qui
+        ne remontait qu'une liste complète à la fin.
         """
-        motif_normalise = motif.lower()
-        resultats: list[tuple[str, EntreeDistante]] = []
-        self._rechercher_fichiers_recursif(
-            chemin_racine, motif_normalise, resultats,
-            sur_dossier_explore, doit_annuler,
-        )
-        return resultats
+        with self._verrou:
+            client = self._client
+        if client is None:
+            raise RuntimeError("Aucune connexion SSH active.")
 
-    def _rechercher_fichiers_recursif(
-        self,
-        chemin: str,
-        motif: str,
-        resultats: list[tuple[str, EntreeDistante]],
-        sur_dossier_explore: Callable[[str], None] | None,
-        doit_annuler: Callable[[], bool] | None,
-    ) -> None:
-        if doit_annuler is not None and doit_annuler():
-            return
-        if sur_dossier_explore is not None:
-            sur_dossier_explore(chemin)
+        motif_glob = shlex.quote(f"*{motif}*")
+        commande = (
+            f"find {shlex.quote(chemin_racine)} -iname {motif_glob} "
+            "-printf '%y\\t%s\\t%p\\n' 2>/dev/null"
+        )
+        logging.info("Recherche SSH (find) : %s", commande)
+        _, stdout, _ = client.exec_command(commande, get_pty=False)
+        canal = stdout.channel
+        with self._verrou:
+            self._canal_recherche = canal
         try:
-            entrees = self.lister_repertoire(chemin)
-        except OSError:
-            logging.exception("Dossier ignoré (recherche), illisible : %s", chemin)
-            return
-        for entree in entrees:
-            if doit_annuler is not None and doit_annuler():
-                return
-            chemin_enfant = f"{chemin.rstrip('/')}/{entree.nom}"
-            if motif in entree.nom.lower():
-                resultats.append((chemin_enfant, entree))
-            if entree.dossier and not entree.lien:
-                self._rechercher_fichiers_recursif(
-                    chemin_enfant, motif, resultats,
-                    sur_dossier_explore, doit_annuler,
-                )
+            decodeur = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            tampon = ""
+            while True:
+                morceau = canal.recv(4096)
+                if not morceau:
+                    break
+                tampon += decodeur.decode(morceau)
+                *completes, tampon = tampon.split("\n")
+                for ligne in completes:
+                    type_car, _, reste = ligne.partition("\t")
+                    taille_str, _, chemin = reste.partition("\t")
+                    if not chemin:
+                        continue
+                    if sur_resultat is not None:
+                        try:
+                            taille = int(taille_str)
+                        except ValueError:
+                            taille = 0
+                        sur_resultat(
+                            chemin, type_car == "d", type_car == "l", taille,
+                        )
+        finally:
+            with self._verrou:
+                self._canal_recherche = None
+            canal.close()
+
+    def annuler_recherche(self) -> bool:
+        """Ferme le canal de la recherche en cours, pour l'interrompre
+        depuis l'extérieur — même principe qu'annuler_transfert() pour
+        un transfert de fichier. Le recv() bloqué dessus s'arrête alors
+        (retour vide ou exception selon le moment), rattrapé normalement
+        par le thread de fond de DialogueRechercheFichiers."""
+        with self._verrou:
+            canal = self._canal_recherche
+        if canal is None:
+            return False
+        try:
+            canal.close()
+        except Exception:
+            logging.exception("Fermeture du canal de recherche échouée.")
+        return True
 
     def renommer(self, ancien_chemin: str, nouveau_chemin: str) -> None:
         with self._verrou_navigation:

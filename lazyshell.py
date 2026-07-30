@@ -2309,20 +2309,32 @@ class DialogueRechercheFichiers(wx.Dialog):
     cohérent avec la simplicité déjà en place ailleurs dans l'appli
     (listing amélioré, etc.).
 
-    Le parcours tourne dans un thread de fond (toute E/S réseau hors du
-    thread principal, un parcours profond peut prendre du temps) : le
-    statut se met à jour en direct (nombre de dossiers explorés), limité
-    à 5 rafraîchissements par seconde pour ne pas inonder le thread
-    principal de wx.CallAfter sur une arborescence avec beaucoup de
-    petits dossiers — même principe que la fenêtre de progression des
-    transferts. Les résultats, eux, ne s'affichent qu'une fois la
-    recherche terminée ou annulée : ExecuteurSSH.rechercher_fichiers ne
-    les fait remonter qu'à la toute fin, pas au fil de l'eau.
+    La recherche tourne dans un thread de fond (toute E/S réseau hors du
+    thread principal) et passe par ExecuteurSSH.rechercher_fichiers, qui
+    s'appuie sur la commande find distante : les résultats arrivent en
+    flux, pas seulement à la fin. Un wx.Timer (démarré à chaque
+    recherche, arrêté à la fin) vide périodiquement la file de résultats
+    côté thread principal et les ajoute à la liste au fur et à mesure —
+    plus réactif qu'un wx.CallAfter par résultat sur une arborescence
+    avec beaucoup de correspondances.
 
-    Modale comme les autres boîtes de dialogue SFTP de cette appli
-    (Favoris, Profils) : rien n'empêche de la laisser ouverte pendant
-    que la recherche tourne, Annuler l'interrompt sans fermer la boîte
-    pour permettre d'enchaîner une nouvelle recherche."""
+    Le focus part sur le champ de motif dès l'ouverture (via
+    wx.CallAfter : posé directement dans __init__, avant l'affichage
+    réelle de la boîte par ShowModal(), il ne « prenait » pas de façon
+    fiable — Windows repositionne le focus une fois la boîte devenue
+    visible). Lancer une recherche (Entrée dans le champ ou bouton)
+    déplace ensuite le focus sur la liste des résultats tout de suite,
+    pour suivre son remplissage en direct plutôt que de rester sur un
+    bouton pendant que ça travaille.
+
+    Annuler la recherche ferme la boîte dans le même geste (même
+    principe que le bouton Annuler de DialogueProgression pour un
+    transfert) : plus besoin de cliquer ensuite sur Fermer, et le focus
+    revient à la liste de navigation principale (déjà géré par
+    Fenetre.rechercher_fichiers_sftp après ShowModal()). Échap et la
+    croix, eux, refusent de fermer tant qu'une recherche est en cours —
+    Annuler est le seul moyen explicite de l'interrompre, même logique
+    que DialogueProgression."""
 
     def __init__(self, parent, panneau: PanneauSession):
         super().__init__(
@@ -2330,9 +2342,12 @@ class DialogueRechercheFichiers(wx.Dialog):
             style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
         )
         self.panneau = panneau
-        self._annulation: threading.Event | None = None
         self._en_cours = False
-        self._resultats: list[tuple[str, EntreeDistante]] = []
+        self._annule = False
+        self._resultats: list[tuple[str, bool]] = []
+        self._file_resultats: queue.Queue = queue.Queue()
+        self._debut_recherche = 0.0
+        self._dernier_compte_secondes = -1
 
         etiquette_motif = wx.StaticText(self, label="&Motif :")
         self.champ_motif = wx.TextCtrl(self, style=wx.TE_PROCESS_ENTER)
@@ -2376,9 +2391,12 @@ class DialogueRechercheFichiers(wx.Dialog):
         self.SetSizer(boite)
         self.SetSize((520, 420))
 
+        self._minuteur = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self._sur_minuteur, self._minuteur)
+
         self.Bind(wx.EVT_CLOSE, self._sur_fermeture)
         self.Bind(wx.EVT_BUTTON, self._sur_fermeture, id=wx.ID_CANCEL)
-        self.champ_motif.SetFocus()
+        wx.CallAfter(self.champ_motif.SetFocus)
 
     def _sur_rechercher(self, evt):
         if self._en_cours:
@@ -2390,83 +2408,92 @@ class DialogueRechercheFichiers(wx.Dialog):
             return
 
         self._en_cours = True
+        self._annule = False
         self._resultats = []
-        annulation = threading.Event()
-        self._annulation = annulation
+        self._file_resultats = queue.Queue()
+        self._debut_recherche = time.monotonic()
+        self._dernier_compte_secondes = -1
         self.liste.Set([])
         self.bouton_aller.Disable()
         self.bouton_rechercher.Disable()
         self.bouton_annuler_recherche.Enable()
         self.statut.SetLabel(f"Recherche de « {motif} »…")
         self.panneau.voix.dire(f"Recherche de {motif}.", interrompre=True)
+        # Focus déplacé tout de suite sur la liste, qui se remplit au
+        # fil de l'eau : plus utile à suivre pendant la recherche que
+        # de rester sur le bouton Rechercher.
+        self.liste.SetFocus()
 
         chemin_racine = self.panneau.repertoire
         executeur = self.panneau.executeur
-        dernier_texte = [0.0]
-        compteur_dossiers = [0]
+        file_resultats = self._file_resultats
 
-        def sur_dossier_explore(chemin):
-            compteur_dossiers[0] += 1
-            maintenant = time.monotonic()
-            if maintenant - dernier_texte[0] < 0.2:
-                return
-            dernier_texte[0] = maintenant
-            wx.CallAfter(self._maj_statut_recherche, compteur_dossiers[0])
+        def sur_resultat(chemin, dossier, lien, taille):
+            file_resultats.put((chemin, dossier, lien, taille))
 
         def travailler():
             try:
-                resultats = executeur.rechercher_fichiers(
-                    chemin_racine, motif, sur_dossier_explore, annulation.is_set,
-                )
+                executeur.rechercher_fichiers(chemin_racine, motif, sur_resultat)
             except Exception as erreur:
-                logging.exception("Recherche SFTP échouée : %s", chemin_racine)
-                wx.CallAfter(self._echec_recherche, erreur)
+                wx.CallAfter(self._recherche_finie, erreur)
                 return
-            wx.CallAfter(self._recherche_terminee, resultats, annulation.is_set())
+            wx.CallAfter(self._recherche_finie, None)
 
         threading.Thread(target=travailler, daemon=True).start()
+        self._minuteur.Start(150)
 
-    def _maj_statut_recherche(self, nb_dossiers: int) -> None:
+    def _sur_minuteur(self, evt):
         if not self:
             return
-        self.statut.SetLabel(f"Recherche en cours… {nb_dossiers} dossier(s) exploré(s).")
-
-    def _recherche_terminee(
-        self, resultats: list[tuple[str, EntreeDistante]], annulee: bool,
-    ) -> None:
-        if not self:
-            return
-        self._en_cours = False
-        self._resultats = resultats
-        self.bouton_rechercher.Enable()
-        self.bouton_annuler_recherche.Disable()
-        self.liste.Set([_libelle_resultat_recherche(c, e) for c, e in resultats])
-        if resultats:
+        nouveaux = []
+        while True:
+            try:
+                nouveaux.append(self._file_resultats.get_nowait())
+            except queue.Empty:
+                break
+        changement = bool(nouveaux)
+        for chemin, dossier, lien, taille in nouveaux:
+            self._resultats.append((chemin, dossier))
+            entree = EntreeDistante(
+                nom=chemin.rsplit("/", 1)[-1], dossier=dossier, lien=lien, taille=taille,
+            )
+            self.liste.Append(_libelle_resultat_recherche(chemin, entree))
+        if nouveaux and not self.bouton_aller.IsEnabled():
             self.liste.SetSelection(0)
             self.bouton_aller.Enable()
-        nb = len(resultats)
+
+        secondes = int(time.monotonic() - self._debut_recherche)
+        if changement or secondes != self._dernier_compte_secondes:
+            self._dernier_compte_secondes = secondes
+            nb = len(self._resultats)
+            decompte_resultats = "1 résultat" if nb == 1 else f"{nb} résultats"
+            self.statut.SetLabel(
+                f"Recherche en cours… {decompte_resultats}, {secondes} s."
+            )
+
+    def _recherche_finie(self, erreur: Exception | None) -> None:
+        if not self:
+            return
+        self._minuteur.Stop()
+        self._sur_minuteur(None)  # dernière vidange, pour ne perdre aucun résultat
+        self._en_cours = False
+        self.bouton_rechercher.Enable()
+        self.bouton_annuler_recherche.Disable()
+
+        if erreur is not None and not self._annule:
+            logging.exception("Recherche SSH échouée.")
+            self.statut.SetLabel(f"Recherche échouée : {erreur}")
+            self.panneau.voix.dire("Recherche échouée.", interrompre=True)
+            return
+
+        nb = len(self._resultats)
         decompte_resultats = "1 résultat" if nb == 1 else f"{nb} résultats"
-        verbe = "annulée" if annulee else "terminée"
+        verbe = "annulée" if self._annule else "terminée"
         message = f"Recherche {verbe} : {decompte_resultats}."
         self.statut.SetLabel(message)
         self.panneau.voix.dire(message, interrompre=True)
-        self.liste.SetFocus()
 
-    def _echec_recherche(self, erreur: Exception) -> None:
-        if not self:
-            return
-        self._en_cours = False
-        self.bouton_rechercher.Enable()
-        self.bouton_annuler_recherche.Disable()
-        self.statut.SetLabel(f"Recherche échouée : {erreur}")
-        self.panneau.voix.dire("Recherche échouée.", interrompre=True)
-
-    def _sur_annuler_recherche(self, evt):
-        if self._annulation is not None:
-            self._annulation.set()
-        self.statut.SetLabel("Annulation demandée…")
-
-    def _resultat_selectionne(self) -> tuple[str, EntreeDistante] | None:
+    def _resultat_selectionne(self) -> tuple[str, bool] | None:
         index = self.liste.GetSelection()
         if index == wx.NOT_FOUND or index >= len(self._resultats):
             return None
@@ -2476,13 +2503,24 @@ class DialogueRechercheFichiers(wx.Dialog):
         resultat = self._resultat_selectionne()
         if resultat is None:
             return
-        chemin, entree = resultat
-        self.panneau.aller_a_resultat_recherche(chemin, entree.dossier)
+        chemin, dossier = resultat
+        self.panneau.aller_a_resultat_recherche(chemin, dossier)
         self.EndModal(wx.ID_OK)
 
+    def _sur_annuler_recherche(self, evt):
+        if not self._en_cours:
+            return
+        self._annule = True
+        self.panneau.executeur.annuler_recherche()
+        self.EndModal(wx.ID_CANCEL)
+
     def _sur_fermeture(self, evt):
-        if self._en_cours and self._annulation is not None:
-            self._annulation.set()
+        if self._en_cours:
+            self.panneau.voix.dire(
+                "Recherche en cours. Annuler la recherche pour l'arrêter.",
+                interrompre=True,
+            )
+            return
         self.EndModal(wx.ID_CANCEL)
 
 
