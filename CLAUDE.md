@@ -935,6 +935,85 @@ L'environnement Python est dans `venv`. Utiliser
   renommage complet « mode fichiers » -> « mode navigation », et ce
   dernier changement de libellé.
 
+- **Menu Aide : lien vers le dépôt GitHub, et « À propos » complété
+  avec l'auteur.** Nouvel item « Dépôt GitHub » (`Fenetre.
+  ouvrir_depot_github`, constante `URL_DEPOT`) qui ouvre la page du
+  dépôt dans le navigateur par défaut, sur le même principe que
+  `webbrowser.open` déjà utilisé pour la vérification des mises à
+  jour. La boîte « À propos » affiche en plus l'auteur (Sof,
+  hellosof@gmail.com) et ce même lien. README corrigé au passage
+  (quelques fautes de frappe et d'accord) avec une section Auteur
+  ajoutée avant la licence.
+
+- **Presse-papiers façon WinSCP (Ctrl+C/Ctrl+V) en mode navigation,
+  remplace entièrement les anciens Ctrl+Maj+E/Ctrl+Maj+T.** Reprend
+  l'idée notée de longue date ci-dessus (favoris/reconnexion/file
+  d'attente), volontairement laissée pour la fin. Copier
+  (`PanneauSession.copier_presse_papiers_sftp`) télécharge l'élément
+  sélectionné — fichier ou dossier, récursif — vers un dossier
+  temporaire dédié (`%TEMP%\LazyShell_presse-papiers`, vidé avant
+  chaque nouvelle copie : un seul élément du presse-papiers a de toute
+  façon un sens à la fois, pas la peine d'accumuler les copies
+  successives), puis le pose sur le presse-papiers Windows sous forme
+  d'un vrai `wx.FileDataObject` — ce qu'un Ctrl+V normal dans
+  l'Explorateur colle ensuite comme un fichier local ordinaire, à la
+  destination de son choix. Coller (`coller_presse_papiers_sftp`) fait
+  l'inverse : lit les fichiers du presse-papiers (copiés depuis
+  l'Explorateur avec son propre Ctrl+C) et les envoie vers le
+  répertoire distant affiché. Un dossier parmi les éléments copiés est
+  ignoré avec un avertissement plutôt que de planter : aucun envoi
+  récursif n'existe côté SFTP dans cette appli (seul le téléchargement
+  l'est), l'ancien Ctrl+Maj+E avait la même limite. Les deux
+  réutilisent telle quelle la file d'attente de transferts existante
+  (`Transfert`, `_enfiler_transfert`, `_travailleur_transferts`,
+  `DialogueProgression`) : un nouveau champ `Transfert.presse_papiers`
+  distingue seulement l'annonce finale et déclenche la pose sur le
+  presse-papiers (`PanneauSession._poser_presse_papiers`, appelée
+  depuis `_transfert_reussi`) plutôt que le message « envoyé »/« téléchargé »
+  habituel.
+
+  Nuance demandée explicitement et distincte du grisage habituel : en
+  mode terminal, Ctrl+C et Ctrl+V restent le copier-coller de texte
+  standard (essentiel dans la saisie et la sortie) — un item de menu
+  même grisé aurait laissé croire que ces touches font autre chose
+  dans ce mode. Les deux items de menu correspondants sont donc
+  entièrement retirés du menu Session hors mode navigation plutôt que
+  désactivés (`Fenetre._synchroniser_menu_navigation`, par
+  `Menu.Remove()`/`Menu.Insert()` juste avant l'item « Dossiers
+  favoris » — pas de vrai `Show()` sur un item de menu wx, même
+  contrainte déjà rencontrée pour l'ancien menu Fichiers distants).
+  Idem au clavier : `Fenetre.sur_touche_globale` ne route Ctrl+C/Ctrl+V
+  vers ces actions que si `panneau.mode_navigation` est vrai, sans
+  `return` sinon — la touche tombe alors jusqu'à `evt.Skip()`, donc au
+  comportement natif du champ focalisé, exactement comme pour
+  Entrée/Retour arrière/Suppr/F2 déjà géré ainsi. Ancien piège
+  spécifiquement évité ici : les libellés de ces deux nouveaux items
+  utilisent deux espaces (« Ctrl+C ») et non une tabulation, alors même
+  que « Ctrl+C »/« Ctrl+V » sont des combinaisons que wx reconnaît
+  parfaitement (contrairement à « Ctrl+Maj+D ») — un `\t` aurait donc
+  généré un vrai accélérateur natif fonctionnel, câblé indépendamment
+  de `sur_touche_globale` et de la présence réelle de l'item dans le
+  menu à cet instant, recréant un risque de la même famille que le bug
+  Ctrl+D déjà corrigé plus haut.
+
+  Vérifié par deux reproductions isolées jetables (aucune n'a touché
+  au vrai profil SSH ni au vrai serveur) : la première bascule
+  `mode_navigation` sur une session locale forcée et vérifie que les
+  deux items apparaissent/disparaissent au bon endroit du menu à
+  travers plusieurs bascules successives (`Menu.GetMenuItems().index()`
+  suivi de `Remove()`/`Insert()`, sans jamais perdre la référence à
+  l'item retiré) ; la seconde pose un vrai fichier temporaire sur le
+  presse-papiers Windows via `wx.FileDataObject` puis le relit
+  exactement comme `coller_presse_papiers_sftp`, pour confirmer que
+  l'aller-retour CF_HDROP fonctionne réellement sur cette machine (pas
+  seulement en théorie). Restent à vérifier en conditions réelles,
+  avec un vrai profil SSH et NVDA : Ctrl+C sur un fichier puis un
+  dossier distants suivi d'un vrai collage dans l'Explorateur ; Ctrl+V
+  après un Ctrl+C multi-fichiers dans l'Explorateur (dont un dossier,
+  pour l'avertissement) ; l'apparition/disparition des deux items du
+  menu Session à la bascule Ctrl+Maj+F et au changement d'onglet ;
+  l'annonce vocale de chaque étape.
+
 ## Idées à reprendre plus tard
 
 Notées en passant, pas encore faites — pas de quoi se précipiter dessus

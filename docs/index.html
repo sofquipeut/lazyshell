@@ -107,11 +107,19 @@ fermer la fenêtre.</li>
 serveur — rien à confirmer, rien à retaper.</li>
 </ol>
 
-<p>Même principe pour une copie de sauvegarde ou un transfert ponctuel :
-Ctrl+Maj+T télécharge l'élément sélectionné vers cette machine (un
-dossier entier si besoin, avec tout son contenu), Ctrl+Maj+E envoie un
-fichier de cette machine vers le dossier actuellement affiché. Plus
-besoin d'un client SFTP séparé pour ces allers-retours.</p>
+<p>Même principe pour une copie de sauvegarde ou un transfert ponctuel,
+mais par le presse-papiers Windows plutôt que par une boîte de dialogue
+« Enregistrer sous » — à la manière de WinSCP. Ctrl+C sur un élément
+distant sélectionné le télécharge dans un dossier temporaire puis le
+pose sur le presse-papiers, prêt pour un Ctrl+V normal dans
+l'Explorateur (destination au choix, avec ses propres moyens de
+navigation). Ctrl+V ici envoie vers le dossier actuellement affiché les
+fichiers qui viennent d'être copiés dans l'Explorateur avec son propre
+Ctrl+C. Plus besoin d'un client SFTP séparé pour ces allers-retours.
+Ces deux raccourcis n'apparaissent (menu compris) qu'en mode
+navigation : en mode terminal, Ctrl+C et Ctrl+V restent le
+copier-coller de texte standard, sans aucune interférence entre les
+deux usages.</p>
 
 <table>
 <tr><th scope="col">Touche</th><th scope="col">Action</th></tr>
@@ -120,8 +128,8 @@ besoin d'un client SFTP séparé pour ces allers-retours.</p>
 <tr><td>F2</td><td>Renommer l'élément sélectionné</td></tr>
 <tr><td>Suppr</td><td>Supprimer l'élément sélectionné (avec confirmation)</td></tr>
 <tr><td>Ctrl+Maj+N</td><td>Créer un dossier</td></tr>
-<tr><td>Ctrl+Maj+E</td><td>Envoyer un fichier de cette machine vers le dossier affiché</td></tr>
-<tr><td>Ctrl+Maj+T</td><td>Télécharger l'élément sélectionné vers cette machine</td></tr>
+<tr><td>Ctrl+C</td><td>Copier l'élément sélectionné vers le presse-papiers Windows</td></tr>
+<tr><td>Ctrl+V</td><td>Envoyer vers le dossier affiché les fichiers copiés depuis l'Explorateur</td></tr>
 <tr><td>Ctrl+Maj+A</td><td>Favoris (dossiers distants, par profil SSH)</td></tr>
 </table>
 
@@ -176,12 +184,13 @@ formatage ni coloration syntaxique : c'est le Bloc-notes tel quel,
 volontairement, pour rester sur un éditeur déjà pleinement accessible
 plutôt que d'en réinventer un.</p>
 
-<p>Télécharger (Ctrl+Maj+T) est différent : on choisit où garder une
-copie, sans passer par Notepad ni la renvoyer automatiquement. Sur un
-dossier, le téléchargement est récursif (tout le contenu, avec la même
-arborescence). Envoyer (Ctrl+Maj+E) dépose toujours le fichier choisi
-dans le dossier actuellement affiché — pas de chemin à taper, la
-destination est celle qu'on est en train de parcourir.</p>
+<p>Copier (Ctrl+C) est différent de l'édition : le fichier (ou le dossier,
+récursivement) part vers le presse-papiers plutôt que vers Notepad,
+sans renvoi automatique — c'est à l'Explorateur de décider où coller la
+copie. Coller (Ctrl+V) n'envoie que des fichiers : un dossier présent
+parmi les éléments copiés dans l'Explorateur est ignoré avec un
+avertissement, aucun envoi récursif n'existe côté SFTP dans cette
+application (seul le téléchargement l'est).</p>
 
 <p>Supprimer un dossier non vide supprime tout son contenu avec lui — la
 boîte de dialogue de confirmation le rappelle, mais il n'y a pas de
