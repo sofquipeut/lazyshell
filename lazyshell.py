@@ -2396,7 +2396,19 @@ class DialogueRechercheFichiers(wx.Dialog):
 
         self.Bind(wx.EVT_CLOSE, self._sur_fermeture)
         self.Bind(wx.EVT_BUTTON, self._sur_fermeture, id=wx.ID_CANCEL)
+        # Échap ferme la boîte nativement (wx traite Échap comme un clic
+        # sur le bouton id=wx.ID_CANCEL directement, sans passer par
+        # EVT_CLOSE ni EVT_BUTTON) : ce hook est le seul moyen d'y
+        # accrocher l'annulation de la recherche en cours avant que la
+        # fermeture native ne suive son cours (evt.Skip(), jamais
+        # EndModal ici pour ne pas la déclencher deux fois).
+        self.Bind(wx.EVT_CHAR_HOOK, self._sur_touche)
         wx.CallAfter(self.champ_motif.SetFocus)
+
+    def _sur_touche(self, evt):
+        if evt.GetKeyCode() == wx.WXK_ESCAPE:
+            self._annuler_recherche_en_cours()
+        evt.Skip()
 
     def _sur_rechercher(self, evt):
         if self._en_cours:
@@ -2508,19 +2520,29 @@ class DialogueRechercheFichiers(wx.Dialog):
         self.EndModal(wx.ID_OK)
 
     def _sur_annuler_recherche(self, evt):
+        self._annuler_recherche_en_cours()
+        self.EndModal(wx.ID_CANCEL)
+
+    def _annuler_recherche_en_cours(self) -> None:
+        """Signale l'annulation à la recherche en cours, sans fermer la
+        boîte elle-même — factorisé pour être appelé depuis n'importe
+        quel chemin de fermeture (bouton Annuler, Fermer, croix, Échap),
+        pour ne jamais laisser un find tourner sans suivi côté serveur."""
         if not self._en_cours:
             return
         self._annule = True
         self.panneau.executeur.annuler_recherche()
-        self.EndModal(wx.ID_CANCEL)
 
     def _sur_fermeture(self, evt):
-        if self._en_cours:
-            self.panneau.voix.dire(
-                "Recherche en cours. Annuler la recherche pour l'arrêter.",
-                interrompre=True,
-            )
-            return
+        # Fermer, la croix et Échap ferment tous la boîte sans condition
+        # (Échap notamment : Escape déclenche la fermeture native de wx
+        # pour le bouton id=wx.ID_CANCEL, en direct, sans jamais passer
+        # par ce gestionnaire — inutile de vouloir bloquer la fermeture
+        # ici, une version précédente qui l'essayait ne changeait donc
+        # rien pour Échap et n'était qu'une gêne pour Fermer/la croix).
+        # Une recherche encore en cours est simplement annulée au passage,
+        # pour ne pas laisser le find tourner sans suivi côté serveur.
+        self._annuler_recherche_en_cours()
         self.EndModal(wx.ID_CANCEL)
 
 

@@ -1152,6 +1152,28 @@ L'environnement Python est dans `venv`. Utiliser
   motif à l'ouverture, et celui qui se déplace bien sur la liste dès
   Entrée pressée dans ce champ.
 
+- **Recherche de fichiers : Échap ferme la boîte même pendant une
+  recherche en cours, malgré le blocage codé juste au-dessus —
+  constaté à l'usage, et volontairement laissé ainsi.** Cause :
+  Échap déclenche la fermeture native de wx pour le bouton
+  `id=wx.ID_CANCEL` directement (`EndModal(wx.ID_CANCEL)` interne),
+  sans jamais passer par `EVT_CLOSE` ni `EVT_BUTTON` — le blocage
+  précédent dans `_sur_fermeture` ne pouvait donc pas s'appliquer à
+  Échap, seulement au bouton Fermer et à la croix. Plutôt que de
+  chercher à bloquer Échap aussi (un hook `EVT_CHAR_HOOK` en
+  intercepterait la touche, mais irait à l'encontre de ce qui a été
+  expérimenté et accepté), `_sur_fermeture` est simplifiée pour ne
+  plus jamais refuser de fermer : Fermer, la croix et Échap ferment
+  tous la boîte sans condition désormais, une recherche encore en
+  cours étant simplement annulée au passage
+  (`_annuler_recherche_en_cours`, factorisée, appelée aussi depuis un
+  nouveau hook `EVT_CHAR_HOOK` dédié à Échap — qui ne fait qu'annuler
+  puis `evt.Skip()`, jamais `EndModal` lui-même, pour ne pas doubler
+  avec la fermeture native qui suit). Différent de
+  `DialogueProgression`, qui refuse toujours de fermer par Échap/croix
+  pendant un transfert : cette boîte-ci n'a pas cette même contrainte
+  vérifiée à l'usage, pas de raison de lui imposer la même rigidité.
+
 ## Idées à reprendre plus tard
 
 Notées en passant, pas encore faites — pas de quoi se précipiter dessus
