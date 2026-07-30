@@ -80,7 +80,7 @@ Tout est également accessible depuis la barre de menus.
 | Ctrl+Maj+D | Changer de répertoire courant |
 | Ctrl+Maj+A | Favoris (dossiers distants, par profil SSH) |
 
-**Mode navigation (SFTP)** — actions grisées dans le menu Session hors mode navigation, sauf Ctrl+C/Ctrl+V (absents du menu hors mode navigation, où ces touches servent au copier-coller de texte standard)
+**Mode navigation (SFTP)** — actions grisées dans le menu Session hors mode navigation
 
 | Touche | Action |
 |---|---|
@@ -89,8 +89,8 @@ Tout est également accessible depuis la barre de menus.
 | F2 | Renommer l'élément sélectionné |
 | Suppr | Supprimer l'élément sélectionné (avec confirmation) |
 | Ctrl+Maj+N | Créer un dossier |
-| Ctrl+C | Copier l'élément sélectionné vers le presse-papiers Windows (à coller ensuite dans l'Explorateur) |
-| Ctrl+V | Envoyer vers le dossier distant affiché les fichiers copiés depuis l'Explorateur |
+| Ctrl+Maj+E | Envoyer un fichier vers le dossier distant affiché |
+| Ctrl+Maj+T | Télécharger l'élément sélectionné |
 
 **Commandes enregistrées**
 

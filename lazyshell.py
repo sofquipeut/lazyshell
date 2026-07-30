@@ -729,11 +729,6 @@ class Transfert:
     pourcentage: int | None = None
     vitesse: str = ""
     erreur: str = ""
-    # Une réception destinée au presse-papiers Windows (Ctrl+C en mode
-    # navigation) plutôt qu'à un emplacement local choisi par
-    # l'utilisateur : change l'annonce finale et déclenche la pose sur
-    # le presse-papiers, voir PanneauSession._transfert_reussi.
-    presse_papiers: bool = False
 
     def libelle(self) -> str:
         # Le pourcentage n'est plus répété ici : il vit dans le titre de
@@ -1597,20 +1592,11 @@ class PanneauSession(wx.Panel):
 
         threading.Thread(target=travailler, daemon=True).start()
 
-    def copier_presse_papiers_sftp(self) -> None:
-        """Ctrl+C en mode navigation : télécharge l'élément sélectionné
-        (fichier ou dossier, récursif) vers un dossier temporaire dédié,
-        puis le pose sur le presse-papiers Windows comme un vrai fichier
-        local — pour un Ctrl+V ensuite dans l'Explorateur, à la manière
-        de WinSCP. Remplace l'ancien Ctrl+Maj+T (choix d'un emplacement
-        via une boîte de dialogue) : coller dans l'Explorateur laisse
-        choisir la destination avec les mêmes moyens de navigation que
-        cette boîte, sans étape en plus.
-
-        Le dossier temporaire est vidé avant chaque nouvelle copie
-        plutôt que jamais nettoyé : un seul élément du presse-papiers a
-        de toute façon un sens à la fois, pas la peine d'accumuler les
-        copies successives dans le Temp."""
+    def telecharger_entree_sftp(self) -> None:
+        """Copie l'élément sélectionné (fichier ou dossier, récursif)
+        vers un emplacement choisi sur cette machine. Distinct de
+        l'édition (Entrée) : ici on choisit où et on garde une copie,
+        sans passer par Notepad ni la renvoyer automatiquement."""
         if not self.mode_navigation:
             self.voix.dire(
                 "Cette action nécessite le mode navigation (Ctrl+Maj+F).",
@@ -1624,12 +1610,23 @@ class PanneauSession(wx.Panel):
         entree = self._entrees_sftp[index]
         chemin_distant = _joindre_chemin_distant(self.repertoire, entree.nom)
 
-        import shutil
-        import tempfile
-        dossier_tmp = Path(tempfile.gettempdir()) / "LazyShell_presse-papiers"
-        shutil.rmtree(dossier_tmp, ignore_errors=True)
-        dossier_tmp.mkdir(parents=True, exist_ok=True)
-        chemin_local = str(dossier_tmp / entree.nom)
+        if entree.dossier:
+            with wx.DirDialog(
+                self, "Choisissez où télécharger ce dossier",
+            ) as boite:
+                if boite.ShowModal() != wx.ID_OK:
+                    self.liste_fichiers.SetFocus()
+                    return
+                chemin_local = str(Path(boite.GetPath()) / entree.nom)
+        else:
+            with wx.FileDialog(
+                self, "Enregistrer sous", defaultFile=entree.nom,
+                style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT,
+            ) as boite:
+                if boite.ShowModal() != wx.ID_OK:
+                    self.liste_fichiers.SetFocus()
+                    return
+                chemin_local = boite.GetPath()
 
         self._compteur_transferts += 1
         self._enfiler_transfert(Transfert(
@@ -1639,68 +1636,37 @@ class PanneauSession(wx.Panel):
             chemin_local=chemin_local,
             chemin_distant=chemin_distant,
             dossier=entree.dossier,
-            presse_papiers=True,
         ))
 
-    def coller_presse_papiers_sftp(self) -> None:
-        """Ctrl+V en mode navigation : envoie vers le répertoire distant
-        actuellement affiché les fichiers présents dans le presse-papiers
-        Windows — copiés depuis l'Explorateur avec son propre Ctrl+C.
-        Remplace l'ancien Ctrl+Maj+E (choix d'un fichier via une boîte de
-        dialogue) sur le même principe que Copier ci-dessus : copier
-        depuis l'Explorateur, coller ici.
-
-        Un dossier parmi les éléments copiés est ignoré avec un
-        avertissement plutôt que provoquer une erreur : aucun envoi
-        récursif n'existe côté SFTP dans cette appli (seul le
-        téléchargement l'est), l'ancien Ctrl+Maj+E avait la même limite
-        (sélecteur de fichier seul, pas de dossier)."""
+    def envoyer_fichier_sftp(self) -> None:
+        """Envoie un fichier choisi sur cette machine vers le répertoire
+        distant actuellement affiché — la cible est toujours « ici », pas
+        un chemin à taper, sur le principe même du navigateur."""
         if not self.mode_navigation:
             self.voix.dire(
                 "Cette action nécessite le mode navigation (Ctrl+Maj+F).",
                 interrompre=True,
             )
             return
+        with wx.FileDialog(
+            self, "Choisir le fichier à envoyer",
+            style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
+        ) as boite:
+            if boite.ShowModal() != wx.ID_OK:
+                self.liste_fichiers.SetFocus()
+                return
+            chemin_local = boite.GetPath()
 
-        donnees = wx.FileDataObject()
-        if not wx.TheClipboard.Open():
-            self.voix.dire("Impossible d'accéder au presse-papiers.", interrompre=True)
-            return
-        try:
-            dispo = wx.TheClipboard.IsSupported(wx.DataFormat(wx.DF_FILENAME))
-            if dispo:
-                wx.TheClipboard.GetData(donnees)
-        finally:
-            wx.TheClipboard.Close()
-        if not dispo:
-            self.voix.dire("Aucun fichier dans le presse-papiers.", interrompre=True)
-            return
-
-        chemins = donnees.GetFilenames()
-        fichiers = [c for c in chemins if Path(c).is_file()]
-        nb_dossiers_ignores = len(chemins) - len(fichiers)
-        if nb_dossiers_ignores:
-            self.voix.dire(
-                f"{nb_dossiers_ignores} dossier(s) ignoré(s) : envoi de dossier "
-                "non pris en charge.",
-                interrompre=True,
-            )
-        if not fichiers:
-            if not nb_dossiers_ignores:
-                self.voix.dire("Aucun fichier dans le presse-papiers.", interrompre=True)
-            return
-
-        for chemin_local in fichiers:
-            nom = Path(chemin_local).name
-            chemin_distant = _joindre_chemin_distant(self.repertoire, nom)
-            self._compteur_transferts += 1
-            self._enfiler_transfert(Transfert(
-                numero=self._compteur_transferts,
-                direction="envoi",
-                nom=nom,
-                chemin_local=chemin_local,
-                chemin_distant=chemin_distant,
-            ))
+        nom = Path(chemin_local).name
+        chemin_distant = _joindre_chemin_distant(self.repertoire, nom)
+        self._compteur_transferts += 1
+        self._enfiler_transfert(Transfert(
+            numero=self._compteur_transferts,
+            direction="envoi",
+            nom=nom,
+            chemin_local=chemin_local,
+            chemin_distant=chemin_distant,
+        ))
 
     # -- file d'attente des transferts --------------------------------------
 
@@ -1866,11 +1832,8 @@ class PanneauSession(wx.Panel):
     def _transfert_reussi(self, transfert: Transfert) -> None:
         transfert.etat = "terminé"
         self._rafraichir_transfert(transfert)
-        if transfert.presse_papiers:
-            self._poser_presse_papiers(transfert)
-        else:
-            verbe = "envoyé" if transfert.direction == "envoi" else "téléchargé"
-            self.voix.dire(f"{transfert.nom} {verbe}.", interrompre=True)
+        verbe = "envoyé" if transfert.direction == "envoi" else "téléchargé"
+        self.voix.dire(f"{transfert.nom} {verbe}.", interrompre=True)
         # self.repertoire, pas un chemin capturé à l'envoi : le temps
         # passé en file d'attente est indéterminé, mieux vaut vérifier
         # qu'on regarde toujours le bon dossier que de le supposer.
@@ -1879,26 +1842,6 @@ class PanneauSession(wx.Panel):
             and self.repertoire == _parent_chemin_distant(transfert.chemin_distant)
         ):
             self.charger_dossier_sftp(self.repertoire)
-
-    def _poser_presse_papiers(self, transfert: Transfert) -> None:
-        """Pose le fichier ou dossier local déjà téléchargé (voir
-        copier_presse_papiers_sftp) sur le presse-papiers Windows, sous
-        forme d'un vrai CF_HDROP — ce que colle ensuite l'Explorateur
-        avec son propre Ctrl+V, exactement comme un fichier copié
-        localement."""
-        donnees = wx.FileDataObject()
-        donnees.AddFile(transfert.chemin_local)
-        if wx.TheClipboard.Open():
-            try:
-                wx.TheClipboard.SetData(donnees)
-            finally:
-                wx.TheClipboard.Close()
-            self.voix.dire(
-                f"{transfert.nom} prêt à coller dans l'Explorateur.", interrompre=True,
-            )
-        else:
-            logging.error("Presse-papiers Windows inaccessible.")
-            self.voix.dire("Impossible d'accéder au presse-papiers.", interrompre=True)
 
     def _transfert_echoue(self, transfert: Transfert, erreur: Exception) -> None:
         transfert.etat = "échoué"
@@ -2928,45 +2871,24 @@ class Fenetre(wx.Frame):
         self.item_supprimer_sftp = m_session.Append(wx.ID_ANY, "&Supprimer\tSuppr")
         self.Bind(wx.EVT_MENU, lambda e: self.supprimer_entree_sftp(),
                   self.item_supprimer_sftp)
+        self.item_envoyer_sftp = m_session.Append(
+            wx.ID_ANY, "&Envoyer un fichier…  Ctrl+Maj+E"
+        )
+        self.Bind(wx.EVT_MENU, lambda e: self.envoyer_fichier_sftp(),
+                  self.item_envoyer_sftp)
+        self.item_telecharger_sftp = m_session.Append(
+            wx.ID_ANY, "&Télécharger l'élément sélectionné…  Ctrl+Maj+T"
+        )
+        self.Bind(wx.EVT_MENU, lambda e: self.telecharger_entree_sftp(),
+                  self.item_telecharger_sftp)
         self.items_action_fichiers = [
             self.item_nouveau_dossier_sftp, self.item_renommer_sftp,
-            self.item_supprimer_sftp,
+            self.item_supprimer_sftp, self.item_envoyer_sftp,
+            self.item_telecharger_sftp,
         ]
-
-        # Copier/Coller (Ctrl+C/Ctrl+V) remplacent les anciens Ctrl+Maj+E
-        # (Envoyer) / Ctrl+Maj+T (Télécharger) : copier un élément
-        # distant le télécharge dans un dossier temporaire et le pose
-        # sur le presse-papiers Windows, prêt pour un Ctrl+V dans
-        # l'Explorateur ; coller ici envoie les fichiers du
-        # presse-papiers (copiés depuis l'Explorateur) vers le
-        # répertoire distant affiché — voir PanneauSession.
-        # Pas de simples items grisés comme items_action_fichiers
-        # ci-dessus : Ctrl+C/Ctrl+V servent au copier-coller de texte
-        # standard en mode terminal, un item de menu même grisé
-        # laisserait croire que ces touches font autre chose dans ce
-        # mode. self.m_session, self.item_dossiers_favoris_sftp et les
-        # deux MenuItem eux-mêmes sont conservés pour permettre à
-        # _synchroniser_menu_navigation de les insérer/retirer
-        # dynamiquement (wx n'a pas de vrai Show() sur un item de menu).
-        self.m_session = m_session
-        self.item_copier_presse_papiers_sftp = wx.MenuItem(
-            m_session, wx.ID_ANY, "&Copier l'élément sélectionné  Ctrl+C"
-        )
-        self.Bind(wx.EVT_MENU, lambda e: self.copier_presse_papiers_sftp(),
-                  self.item_copier_presse_papiers_sftp)
-        self.item_coller_presse_papiers_sftp = wx.MenuItem(
-            m_session, wx.ID_ANY, "Co&ller depuis le presse-papiers  Ctrl+V"
-        )
-        self.Bind(wx.EVT_MENU, lambda e: self.coller_presse_papiers_sftp(),
-                  self.item_coller_presse_papiers_sftp)
-        self._presse_papiers_sftp_visible = False
-
-        self.item_dossiers_favoris_sftp = m_session.Append(
-            wx.ID_ANY, "&Dossiers favoris…  Ctrl+Maj+A"
-        )
         self.Bind(wx.EVT_MENU,
                   lambda e: self.gerer_favoris_sftp(),
-                  self.item_dossiers_favoris_sftp)
+                  m_session.Append(wx.ID_ANY, "&Dossiers favoris…  Ctrl+Maj+A"))
         m_session.AppendSeparator()
         self.Bind(wx.EVT_MENU,
                   lambda e: self.Close(),
@@ -3525,15 +3447,15 @@ class Fenetre(wx.Frame):
         if panneau is not None:
             panneau.supprimer_entree_sftp()
 
-    def copier_presse_papiers_sftp(self):
+    def telecharger_entree_sftp(self):
         panneau = self.session()
         if panneau is not None:
-            panneau.copier_presse_papiers_sftp()
+            panneau.telecharger_entree_sftp()
 
-    def coller_presse_papiers_sftp(self):
+    def envoyer_fichier_sftp(self):
         panneau = self.session()
         if panneau is not None:
-            panneau.coller_presse_papiers_sftp()
+            panneau.envoyer_fichier_sftp()
 
     def gerer_favoris_sftp(self):
         panneau = self.session()
@@ -3617,19 +3539,6 @@ class Fenetre(wx.Frame):
         # fichiers, ces trois actions n'y servent à rien.
         for item in self.items_commandes:
             item.Enable(not actif)
-
-        # Copier/Coller : insérés/retirés du menu plutôt que grisés, voir
-        # le commentaire dans _construire_menus. Toujours juste avant
-        # « Dossiers favoris », qui reste à sa place à chaque bascule.
-        if actif and not self._presse_papiers_sftp_visible:
-            pos = self.m_session.GetMenuItems().index(self.item_dossiers_favoris_sftp)
-            self.m_session.Insert(pos, self.item_copier_presse_papiers_sftp)
-            self.m_session.Insert(pos + 1, self.item_coller_presse_papiers_sftp)
-            self._presse_papiers_sftp_visible = True
-        elif not actif and self._presse_papiers_sftp_visible:
-            self.m_session.Remove(self.item_copier_presse_papiers_sftp)
-            self.m_session.Remove(self.item_coller_presse_papiers_sftp)
-            self._presse_papiers_sftp_visible = False
 
     def effacer_sortie(self):
         panneau = self.session()
@@ -3801,26 +3710,6 @@ class Fenetre(wx.Frame):
                 panneau.renommer_entree_sftp()
                 return
 
-        # Ctrl+C/Ctrl+V (sans Maj) du mode navigation : copier/coller un
-        # fichier distant via le presse-papiers Windows (remplace les
-        # anciens Ctrl+Maj+E/Ctrl+Maj+T, voir PanneauSession.
-        # copier_presse_papiers_sftp/coller_presse_papiers_sftp). Ne rien
-        # faire (pas de return) hors mode navigation, pour laisser ces
-        # deux touches à leur usage normal ailleurs — le copier-coller de
-        # texte standard dans la saisie ou la sortie, exactement comme
-        # pour Entrée/Retour arrière/Suppr/F2 ci-dessus.
-        if ctrl and not maj and not alt and code == ord("C"):
-            panneau = self.session()
-            if panneau is not None and panneau.mode_navigation:
-                self.copier_presse_papiers_sftp()
-                return
-
-        if ctrl and not maj and not alt and code == ord("V"):
-            panneau = self.session()
-            if panneau is not None and panneau.mode_navigation:
-                self.coller_presse_papiers_sftp()
-                return
-
         if ctrl and code in (wx.WXK_PAUSE, wx.WXK_CANCEL):
             panneau = self.session()
             if panneau is not None:
@@ -3902,6 +3791,14 @@ class Fenetre(wx.Frame):
 
         if ctrl and maj and code == ord("F"):
             self.basculer_mode_navigation()
+            return
+
+        if ctrl and maj and code == ord("E"):
+            self.envoyer_fichier_sftp()
+            return
+
+        if ctrl and maj and code == ord("T"):
+            self.telecharger_entree_sftp()
             return
 
         if ctrl and maj and code == ord("A"):

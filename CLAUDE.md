@@ -945,74 +945,42 @@ L'environnement Python est dans `venv`. Utiliser
   (quelques fautes de frappe et d'accord) avec une section Auteur
   ajoutée avant la licence.
 
-- **Presse-papiers façon WinSCP (Ctrl+C/Ctrl+V) en mode navigation,
-  remplace entièrement les anciens Ctrl+Maj+E/Ctrl+Maj+T.** Reprend
-  l'idée notée de longue date ci-dessus (favoris/reconnexion/file
-  d'attente), volontairement laissée pour la fin. Copier
-  (`PanneauSession.copier_presse_papiers_sftp`) télécharge l'élément
-  sélectionné — fichier ou dossier, récursif — vers un dossier
-  temporaire dédié (`%TEMP%\LazyShell_presse-papiers`, vidé avant
-  chaque nouvelle copie : un seul élément du presse-papiers a de toute
-  façon un sens à la fois, pas la peine d'accumuler les copies
-  successives), puis le pose sur le presse-papiers Windows sous forme
-  d'un vrai `wx.FileDataObject` — ce qu'un Ctrl+V normal dans
-  l'Explorateur colle ensuite comme un fichier local ordinaire, à la
-  destination de son choix. Coller (`coller_presse_papiers_sftp`) fait
-  l'inverse : lit les fichiers du presse-papiers (copiés depuis
-  l'Explorateur avec son propre Ctrl+C) et les envoie vers le
-  répertoire distant affiché. Un dossier parmi les éléments copiés est
-  ignoré avec un avertissement plutôt que de planter : aucun envoi
-  récursif n'existe côté SFTP dans cette appli (seul le téléchargement
-  l'est), l'ancien Ctrl+Maj+E avait la même limite. Les deux
-  réutilisent telle quelle la file d'attente de transferts existante
-  (`Transfert`, `_enfiler_transfert`, `_travailleur_transferts`,
-  `DialogueProgression`) : un nouveau champ `Transfert.presse_papiers`
-  distingue seulement l'annonce finale et déclenche la pose sur le
-  presse-papiers (`PanneauSession._poser_presse_papiers`, appelée
-  depuis `_transfert_reussi`) plutôt que le message « envoyé »/« téléchargé »
-  habituel.
+- **Presse-papiers façon WinSCP (Ctrl+C/Ctrl+V) en mode navigation :
+  tenté, puis abandonné et revenu en arrière (`git revert`) avant
+  toute vérification réelle.** Reprenait l'idée notée de longue date
+  ci-dessus (favoris/reconnexion/file d'attente), en remplacement des
+  Ctrl+Maj+E/Ctrl+Maj+T existants : Ctrl+C sur un élément distant le
+  téléchargeait vers un dossier temporaire puis le posait sur le
+  presse-papiers Windows (`wx.FileDataObject`, format CF_HDROP) pour
+  un Ctrl+V dans l'Explorateur ; Ctrl+V dans la liste envoyait les
+  fichiers du presse-papiers vers le répertoire distant affiché.
 
-  Nuance demandée explicitement et distincte du grisage habituel : en
-  mode terminal, Ctrl+C et Ctrl+V restent le copier-coller de texte
-  standard (essentiel dans la saisie et la sortie) — un item de menu
-  même grisé aurait laissé croire que ces touches font autre chose
-  dans ce mode. Les deux items de menu correspondants sont donc
-  entièrement retirés du menu Session hors mode navigation plutôt que
-  désactivés (`Fenetre._synchroniser_menu_navigation`, par
-  `Menu.Remove()`/`Menu.Insert()` juste avant l'item « Dossiers
-  favoris » — pas de vrai `Show()` sur un item de menu wx, même
-  contrainte déjà rencontrée pour l'ancien menu Fichiers distants).
-  Idem au clavier : `Fenetre.sur_touche_globale` ne route Ctrl+C/Ctrl+V
-  vers ces actions que si `panneau.mode_navigation` est vrai, sans
-  `return` sinon — la touche tombe alors jusqu'à `evt.Skip()`, donc au
-  comportement natif du champ focalisé, exactement comme pour
-  Entrée/Retour arrière/Suppr/F2 déjà géré ainsi. Ancien piège
-  spécifiquement évité ici : les libellés de ces deux nouveaux items
-  utilisent deux espaces (« Ctrl+C ») et non une tabulation, alors même
-  que « Ctrl+C »/« Ctrl+V » sont des combinaisons que wx reconnaît
-  parfaitement (contrairement à « Ctrl+Maj+D ») — un `\t` aurait donc
-  généré un vrai accélérateur natif fonctionnel, câblé indépendamment
-  de `sur_touche_globale` et de la présence réelle de l'item dans le
-  menu à cet instant, recréant un risque de la même famille que le bug
-  Ctrl+D déjà corrigé plus haut.
+  Problème identifié avant toute vérification au clavier, à la seule
+  réflexion sur l'usage réel : CF_HDROP exige que le fichier existe
+  *déjà* sur le disque local au moment où l'Explorateur colle — ce
+  format ne transporte qu'une liste de chemins, pas un contenu à la
+  demande. Le téléchargement devait donc forcément démarrer dès le
+  Ctrl+C, avant même de savoir si et où l'utilisateur allait coller,
+  avec une fenêtre modale bloquante qui s'ouvrait immédiatement.
+  Un vrai copier-coller doit être instantané ; celui-ci obligeait à
+  copier, basculer vers l'Explorateur, puis attendre la fin du
+  transfert avant de pouvoir coller — un aller-retour bien plus lourd
+  que l'ancien Ctrl+Maj+T (boîte de dialogue « Enregistrer sous »,
+  mais sans cette attente imposée entre deux fenêtres).
 
-  Vérifié par deux reproductions isolées jetables (aucune n'a touché
-  au vrai profil SSH ni au vrai serveur) : la première bascule
-  `mode_navigation` sur une session locale forcée et vérifie que les
-  deux items apparaissent/disparaissent au bon endroit du menu à
-  travers plusieurs bascules successives (`Menu.GetMenuItems().index()`
-  suivi de `Remove()`/`Insert()`, sans jamais perdre la référence à
-  l'item retiré) ; la seconde pose un vrai fichier temporaire sur le
-  presse-papiers Windows via `wx.FileDataObject` puis le relit
-  exactement comme `coller_presse_papiers_sftp`, pour confirmer que
-  l'aller-retour CF_HDROP fonctionne réellement sur cette machine (pas
-  seulement en théorie). Restent à vérifier en conditions réelles,
-  avec un vrai profil SSH et NVDA : Ctrl+C sur un fichier puis un
-  dossier distants suivi d'un vrai collage dans l'Explorateur ; Ctrl+V
-  après un Ctrl+C multi-fichiers dans l'Explorateur (dont un dossier,
-  pour l'avertissement) ; l'apparition/disparition des deux items du
-  menu Session à la bascule Ctrl+Maj+F et au changement d'onglet ;
-  l'annonce vocale de chaque étape.
+  Le mécanisme qui permettrait un vrai différé (WinSCP, pièces jointes
+  Outlook) existe (formats COM `FileGroupDescriptorW` +
+  `FileContents`, où l'Explorateur ne réclame le contenu qu'au moment
+  du collage via un `IDataObject.GetData` différé), mais demande un
+  vrai objet COM écrit à la main (`pywin32`/`pythoncom`, `wx.
+  FileDataObject` ne fait que du CF_HDROP), avec le thread de
+  l'Explorateur qui resterait bloqué en attendant la réponse — un
+  réseau SSH lent y afficherait « Ne répond pas ». Jugé disproportionné
+  et fragile pour ce projet, sans précédent comparable (seul le canal
+  JAWS partage cette prudence face à un mécanisme non vérifié en
+  conditions réelles). Les anciens Ctrl+Maj+E (Envoyer) / Ctrl+Maj+T
+  (Télécharger), qui fonctionnaient bien, sont donc restés en place
+  tels quels — voir leur description plus haut dans ce journal.
 
 ## Idées à reprendre plus tard
 
