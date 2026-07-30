@@ -122,8 +122,19 @@ besoin d'un client SFTP séparé pour ces allers-retours.</p>
 <tr><td>Ctrl+Maj+N</td><td>Créer un dossier</td></tr>
 <tr><td>Ctrl+Maj+E</td><td>Envoyer un fichier de cette machine vers le dossier affiché</td></tr>
 <tr><td>Ctrl+Maj+T</td><td>Télécharger l'élément sélectionné vers cette machine</td></tr>
+<tr><td>Ctrl+Maj+G</td><td>Rechercher des fichiers ou dossiers par nom, récursivement</td></tr>
 <tr><td>Ctrl+Maj+A</td><td>Favoris (dossiers distants, par profil SSH)</td></tr>
 </table>
+
+<p>Ctrl+Maj+G ouvre une recherche récursive de fichiers ou dossiers par
+nom (simple sous-chaîne, insensible à la casse) à partir du dossier
+actuellement affiché — même principe que la recherche de l'Explorateur
+Windows ou la commande <code>find</code>. La recherche tourne en tâche
+de fond ; un dossier illisible en cours de route est ignoré plutôt que
+d'interrompre toute la recherche. Chaque résultat affiche son chemin
+complet ; « Aller au résultat » ouvre directement le dossier concerné
+(le dossier parent, avec le fichier sélectionné, s'il s'agit d'un
+fichier).</p>
 
 <p>Dès qu'un envoi ou un téléchargement démarre, une fenêtre de
 progression modale s'ouvre automatiquement et prend le pas sur le reste

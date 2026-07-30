@@ -26,7 +26,10 @@ De plus, j'utilisais WinSCP en parallèle pour parcourir un serveur distant, afi
   pourcentage, vitesse, bouton Annuler) qui bloque le reste de
   l'application jusqu'à la fin du transfert, et des dossiers favoris
   nommés par profil SSH (nom explicite et chemin, comme les commandes
-  enregistrées) pour y sauter directement.
+  enregistrées) pour y sauter directement. Recherche récursive de
+  fichiers ou dossiers par nom à partir du dossier affiché, avec un
+  résultat qui amène directement dessus (dans son dossier parent pour
+  un fichier).
 - Reconnexion proposée automatiquement si la connexion SSH tombe en
   cours de session (mot de passe redemandé seulement s'il n'est pas
   déjà mémorisé), sans perdre l'historique de la session en cours.
@@ -91,6 +94,7 @@ Tout est également accessible depuis la barre de menus.
 | Ctrl+Maj+N | Créer un dossier |
 | Ctrl+Maj+E | Envoyer un fichier vers le dossier distant affiché |
 | Ctrl+Maj+T | Télécharger l'élément sélectionné |
+| Ctrl+Maj+G | Rechercher des fichiers (récursif, à partir du dossier affiché) |
 
 **Commandes enregistrées**
 

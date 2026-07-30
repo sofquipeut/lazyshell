@@ -982,6 +982,73 @@ L'environnement Python est dans `venv`. Utiliser
   (Télécharger), qui fonctionnaient bien, sont donc restés en place
   tels quels — voir leur description plus haut dans ce journal.
 
+- **Recherche récursive de fichiers en mode navigation, Ctrl+Maj+G.**
+  Nouvelle boîte `DialogueRechercheFichiers` (motif tapé, bouton
+  Rechercher, liste de résultats avec chemin complet, bouton « Aller au
+  résultat »). Correspondance simple sur une sous-chaîne du nom,
+  insensible à la casse — pas de glob ni de regex, cohérent avec la
+  simplicité déjà en place ailleurs (listing amélioré, etc.).
+
+  Côté SSH, `ExecuteurSSH.rechercher_fichiers`/
+  `_rechercher_fichiers_recursif` (`ssh.py`) parcourt récursivement en
+  s'appuyant sur `lister_repertoire` déjà existant (même schéma que
+  `supprimer_dossier`/`_telecharger_dossier_recursif` pour la
+  récursivité côté client, le protocole SFTP n'offrant rien de
+  récursif). Un lien vers un dossier n'est jamais suivi : rien ne
+  garantit qu'il ne se referme pas sur un de ses propres ancêtres, ce
+  qui boucherait indéfiniment. Un dossier illisible en cours de route
+  (droits refusés) est ignoré (`except OSError`, journalisé) plutôt que
+  d'interrompre toute la recherche pour une seule branche
+  inaccessible.
+
+  Le parcours tourne dans un thread de fond, comme toute E/S réseau
+  dans cette appli (contrainte non négociable, voir en tête de ce
+  fichier) : `DialogueRechercheFichiers` lance un thread à chaque clic
+  sur Rechercher, remonte l'état par `wx.CallAfter`. Le statut
+  (« N dossiers explorés ») se met à jour en direct pendant la
+  recherche, limité à 5 rafraîchissements par seconde (même principe
+  que la fenêtre de progression des transferts, pour ne pas inonder le
+  thread principal sur une arborescence à beaucoup de petits dossiers)
+  — les résultats eux-mêmes ne s'affichent qu'à la fin, puisque
+  `rechercher_fichiers` ne les fait remonter qu'une fois le parcours
+  entièrement terminé, pas au fil de l'eau. Annulation par
+  `threading.Event`, vérifié entre chaque dossier (`doit_annuler`
+  passé jusqu'au fond de la récursion) : les résultats déjà trouvés
+  sont conservés, une recherche annulée n'est pas un échec.
+
+  « Aller au résultat » (`PanneauSession.aller_a_resultat_recherche`)
+  ouvre directement le dossier trouvé si c'est un dossier, ou son
+  dossier parent avec le fichier sélectionné sinon — contrairement à
+  `aller_au_favori`, qui ne pointe toujours que sur un dossier, un
+  résultat de recherche peut être un fichier à n'importe quelle
+  profondeur. Nécessite un nouveau paramètre optionnel
+  `nom_a_selectionner` sur `charger_dossier_sftp`/`_dossier_sftp_charge`,
+  pour sélectionner une entrée précise après chargement au lieu de la
+  première par défaut (repli sur la première si le nom n'est plus
+  présent — supprimé ou renommé entre-temps).
+
+  Raccourci Ctrl+Maj+G (lettre libre, sans mnémonique évident en
+  français — la plupart des lettres associées à « recherche »,
+  « chercher », « trouver », « fichier » étaient déjà prises par
+  d'autres raccourcis de ce même menu). Grisé comme Nouveau
+  dossier/Renommer/Supprimer (`items_action_fichiers`) : pas de
+  collision possible avec un usage en mode terminal (contrairement à
+  l'expérience Ctrl+C/Ctrl+V abandonnée juste au-dessus), donc pas
+  besoin d'insertion/retrait dynamique du menu.
+
+  Vérifié par des reproductions isolées jetables (aucune connexion
+  SSH réelle) : la logique de parcours récursif sur une arborescence
+  factice (sensibilité à la casse, lien non suivi, dossier illisible
+  ignoré, annulation immédiate et en cours de route) ; le grisage du
+  menu et la construction de la boîte ; le flux complet thread de
+  fond + `wx.CallAfter` + activation du bouton « Aller au résultat » ;
+  la sélection d'une entrée précise par nom après chargement d'un
+  dossier (`_dossier_sftp_charge`). Reste à vérifier en conditions
+  réelles avec NVDA : une recherche sur un vrai serveur SSH (y compris
+  un dossier avec des droits refusés dedans, et une annulation en
+  cours de route), l'annonce vocale à chaque étape, et la navigation
+  effective vers un résultat trouvé en profondeur.
+
 ## Idées à reprendre plus tard
 
 Notées en passant, pas encore faites — pas de quoi se précipiter dessus

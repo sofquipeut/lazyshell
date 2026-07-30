@@ -700,6 +700,18 @@ def _libelle_entree_sftp(entree: EntreeDistante) -> str:
     return f"{entree.nom} — {genre} — {entree.taille} octets — {modifie}"
 
 
+def _libelle_resultat_recherche(chemin: str, entree: EntreeDistante) -> str:
+    """Libellé d'une ligne de DialogueRechercheFichiers : le chemin
+    complet plutôt que le seul nom (repris de _libelle_entree_sftp), un
+    résultat pouvant venir de n'importe quelle profondeur sous le
+    dossier de recherche."""
+    if entree.dossier:
+        genre = "lien vers un dossier" if entree.lien else "dossier"
+        return f"{chemin} — {genre}"
+    genre = "lien" if entree.lien else "fichier"
+    return f"{chemin} — {genre} — {entree.taille} octets"
+
+
 # --------------------------------------------------------------------------
 # Transferts (SFTP)
 # --------------------------------------------------------------------------
@@ -1365,10 +1377,17 @@ class PanneauSession(wx.Panel):
             self.voix.dire("Mode terminal.", interrompre=True)
             self.saisie.SetFocus()
 
-    def charger_dossier_sftp(self, chemin: str) -> None:
+    def charger_dossier_sftp(
+        self, chemin: str, nom_a_selectionner: str | None = None,
+    ) -> None:
         """(Re)charge un dossier distant dans la liste, en tâche de fond :
         un listage reste un aller-retour réseau, il ne doit pas figer
         l'interface le temps qu'il revienne.
+
+        nom_a_selectionner sélectionne une entrée précise une fois le
+        dossier chargé (au lieu de la première par défaut) — utilisé
+        par DialogueRechercheFichiers pour amener directement sur le
+        fichier trouvé, pas seulement dans son dossier.
 
         Aussi appelée depuis wx.CallAfter (renommage, suppression,
         création de dossier réussis) : la session peut avoir été fermée
@@ -1387,7 +1406,7 @@ class PanneauSession(wx.Panel):
                 wx.CallAfter(self._echec_action_sftp, "Listage", erreur)
                 wx.CallAfter(self._vider_liste_fichiers_sftp)
                 return
-            wx.CallAfter(self._dossier_sftp_charge, reel, entrees)
+            wx.CallAfter(self._dossier_sftp_charge, reel, entrees, nom_a_selectionner)
 
         threading.Thread(target=travailler, daemon=True).start()
 
@@ -1396,7 +1415,12 @@ class PanneauSession(wx.Panel):
             return
         self.liste_fichiers.Set([])
 
-    def _dossier_sftp_charge(self, chemin: str, entrees: list[EntreeDistante]) -> None:
+    def _dossier_sftp_charge(
+        self,
+        chemin: str,
+        entrees: list[EntreeDistante],
+        nom_a_selectionner: str | None = None,
+    ) -> None:
         # La session peut avoir été fermée (Ctrl+W) pendant que ce listage
         # était encore en vol côté réseau : le rappel wx.CallAfter arrive
         # quand même, sur un panneau déjà détruit — sans ce garde,
@@ -1407,7 +1431,13 @@ class PanneauSession(wx.Panel):
         self.definir_repertoire(chemin)
         self.liste_fichiers.Set([_libelle_entree_sftp(e) for e in entrees])
         if entrees:
-            self.liste_fichiers.SetSelection(0)
+            index = 0
+            if nom_a_selectionner is not None:
+                for i, entree in enumerate(entrees):
+                    if entree.nom == nom_a_selectionner:
+                        index = i
+                        break
+            self.liste_fichiers.SetSelection(index)
         if self.mode_navigation:
             self.liste_fichiers.SetFocus()
 
@@ -1458,6 +1488,20 @@ class PanneauSession(wx.Panel):
             self.definir_repertoire(chemin)
         self.GetTopLevelParent().SetStatusText(f"Répertoire : {chemin}")
         self.voix.dire(f"Répertoire : {chemin}", interrompre=True)
+
+    def aller_a_resultat_recherche(self, chemin: str, dossier: bool) -> None:
+        """Ouvre le résultat d'une recherche (DialogueRechercheFichiers) :
+        le dossier lui-même s'il en est un, sinon son dossier parent
+        avec le fichier sélectionné — un résultat peut venir de
+        n'importe quelle profondeur sous le dossier où la recherche a
+        démarré, contrairement à aller_au_favori qui ne pointe toujours
+        que sur un dossier."""
+        if dossier:
+            self.charger_dossier_sftp(chemin)
+        else:
+            parent = _parent_chemin_distant(chemin)
+            nom = chemin.rsplit("/", 1)[-1]
+            self.charger_dossier_sftp(parent, nom_a_selectionner=nom)
 
     def sauvegarder_favoris(self) -> None:
         """Réécrit ssh_profiles.json avec les favoris à jour de ce
@@ -2254,6 +2298,195 @@ class DialogueFavoris(wx.Dialog):
 
 
 # --------------------------------------------------------------------------
+# Boîte de dialogue : recherche de fichiers (SFTP)
+# --------------------------------------------------------------------------
+
+class DialogueRechercheFichiers(wx.Dialog):
+    """Recherche récursive de fichiers ou dossiers par nom, à partir du
+    dossier actuellement affiché en mode navigation — même esprit que la
+    recherche de l'Explorateur Windows ou `find`. Simple sous-chaîne du
+    nom, insensible à la casse : pas de motif plus riche (glob, regex),
+    cohérent avec la simplicité déjà en place ailleurs dans l'appli
+    (listing amélioré, etc.).
+
+    Le parcours tourne dans un thread de fond (toute E/S réseau hors du
+    thread principal, un parcours profond peut prendre du temps) : le
+    statut se met à jour en direct (nombre de dossiers explorés), limité
+    à 5 rafraîchissements par seconde pour ne pas inonder le thread
+    principal de wx.CallAfter sur une arborescence avec beaucoup de
+    petits dossiers — même principe que la fenêtre de progression des
+    transferts. Les résultats, eux, ne s'affichent qu'une fois la
+    recherche terminée ou annulée : ExecuteurSSH.rechercher_fichiers ne
+    les fait remonter qu'à la toute fin, pas au fil de l'eau.
+
+    Modale comme les autres boîtes de dialogue SFTP de cette appli
+    (Favoris, Profils) : rien n'empêche de la laisser ouverte pendant
+    que la recherche tourne, Annuler l'interrompt sans fermer la boîte
+    pour permettre d'enchaîner une nouvelle recherche."""
+
+    def __init__(self, parent, panneau: PanneauSession):
+        super().__init__(
+            parent, title="Recherche de fichiers",
+            style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
+        )
+        self.panneau = panneau
+        self._annulation: threading.Event | None = None
+        self._en_cours = False
+        self._resultats: list[tuple[str, EntreeDistante]] = []
+
+        etiquette_motif = wx.StaticText(self, label="&Motif :")
+        self.champ_motif = wx.TextCtrl(self, style=wx.TE_PROCESS_ENTER)
+        self.champ_motif.Bind(wx.EVT_TEXT_ENTER, self._sur_rechercher)
+
+        self.bouton_rechercher = wx.Button(self, label="&Rechercher")
+        self.bouton_rechercher.SetDefault()
+        self.bouton_rechercher.Bind(wx.EVT_BUTTON, self._sur_rechercher)
+        self.bouton_annuler_recherche = wx.Button(self, label="A&nnuler la recherche")
+        self.bouton_annuler_recherche.Bind(wx.EVT_BUTTON, self._sur_annuler_recherche)
+        self.bouton_annuler_recherche.Disable()
+
+        ligne_motif = wx.BoxSizer(wx.HORIZONTAL)
+        ligne_motif.Add(self.champ_motif, 1, wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, 6)
+        ligne_motif.Add(self.bouton_rechercher, 0, wx.RIGHT, 6)
+        ligne_motif.Add(self.bouton_annuler_recherche, 0)
+
+        self.statut = wx.StaticText(self, label="Tapez un motif puis Rechercher.")
+        self.statut.SetName("Statut de la recherche")
+
+        etiquette_resultats = wx.StaticText(self, label="&Résultats :")
+        self.liste = wx.ListBox(self)
+        self.liste.Bind(wx.EVT_LISTBOX_DCLICK, self._sur_aller)
+
+        self.bouton_aller = wx.Button(self, label="&Aller au résultat")
+        self.bouton_aller.Bind(wx.EVT_BUTTON, self._sur_aller)
+        self.bouton_aller.Disable()
+        bouton_fermer = wx.Button(self, id=wx.ID_CANCEL, label="Fer&mer")
+
+        boutons = wx.BoxSizer(wx.HORIZONTAL)
+        boutons.Add(self.bouton_aller, 0, wx.RIGHT, 6)
+        boutons.Add(bouton_fermer, 0)
+
+        boite = wx.BoxSizer(wx.VERTICAL)
+        boite.Add(etiquette_motif, 0, wx.LEFT | wx.RIGHT | wx.TOP, 8)
+        boite.Add(ligne_motif, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 8)
+        boite.Add(self.statut, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 8)
+        boite.Add(etiquette_resultats, 0, wx.LEFT | wx.RIGHT | wx.TOP, 8)
+        boite.Add(self.liste, 1, wx.EXPAND | wx.ALL, 8)
+        boite.Add(boutons, 0, wx.ALIGN_RIGHT | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+        self.SetSizer(boite)
+        self.SetSize((520, 420))
+
+        self.Bind(wx.EVT_CLOSE, self._sur_fermeture)
+        self.Bind(wx.EVT_BUTTON, self._sur_fermeture, id=wx.ID_CANCEL)
+        self.champ_motif.SetFocus()
+
+    def _sur_rechercher(self, evt):
+        if self._en_cours:
+            return
+        motif = self.champ_motif.GetValue().strip()
+        if not motif:
+            self.panneau.voix.dire("Tapez un motif à rechercher.", interrompre=True)
+            self.champ_motif.SetFocus()
+            return
+
+        self._en_cours = True
+        self._resultats = []
+        annulation = threading.Event()
+        self._annulation = annulation
+        self.liste.Set([])
+        self.bouton_aller.Disable()
+        self.bouton_rechercher.Disable()
+        self.bouton_annuler_recherche.Enable()
+        self.statut.SetLabel(f"Recherche de « {motif} »…")
+        self.panneau.voix.dire(f"Recherche de {motif}.", interrompre=True)
+
+        chemin_racine = self.panneau.repertoire
+        executeur = self.panneau.executeur
+        dernier_texte = [0.0]
+        compteur_dossiers = [0]
+
+        def sur_dossier_explore(chemin):
+            compteur_dossiers[0] += 1
+            maintenant = time.monotonic()
+            if maintenant - dernier_texte[0] < 0.2:
+                return
+            dernier_texte[0] = maintenant
+            wx.CallAfter(self._maj_statut_recherche, compteur_dossiers[0])
+
+        def travailler():
+            try:
+                resultats = executeur.rechercher_fichiers(
+                    chemin_racine, motif, sur_dossier_explore, annulation.is_set,
+                )
+            except Exception as erreur:
+                logging.exception("Recherche SFTP échouée : %s", chemin_racine)
+                wx.CallAfter(self._echec_recherche, erreur)
+                return
+            wx.CallAfter(self._recherche_terminee, resultats, annulation.is_set())
+
+        threading.Thread(target=travailler, daemon=True).start()
+
+    def _maj_statut_recherche(self, nb_dossiers: int) -> None:
+        if not self:
+            return
+        self.statut.SetLabel(f"Recherche en cours… {nb_dossiers} dossier(s) exploré(s).")
+
+    def _recherche_terminee(
+        self, resultats: list[tuple[str, EntreeDistante]], annulee: bool,
+    ) -> None:
+        if not self:
+            return
+        self._en_cours = False
+        self._resultats = resultats
+        self.bouton_rechercher.Enable()
+        self.bouton_annuler_recherche.Disable()
+        self.liste.Set([_libelle_resultat_recherche(c, e) for c, e in resultats])
+        if resultats:
+            self.liste.SetSelection(0)
+            self.bouton_aller.Enable()
+        nb = len(resultats)
+        decompte_resultats = "1 résultat" if nb == 1 else f"{nb} résultats"
+        verbe = "annulée" if annulee else "terminée"
+        message = f"Recherche {verbe} : {decompte_resultats}."
+        self.statut.SetLabel(message)
+        self.panneau.voix.dire(message, interrompre=True)
+        self.liste.SetFocus()
+
+    def _echec_recherche(self, erreur: Exception) -> None:
+        if not self:
+            return
+        self._en_cours = False
+        self.bouton_rechercher.Enable()
+        self.bouton_annuler_recherche.Disable()
+        self.statut.SetLabel(f"Recherche échouée : {erreur}")
+        self.panneau.voix.dire("Recherche échouée.", interrompre=True)
+
+    def _sur_annuler_recherche(self, evt):
+        if self._annulation is not None:
+            self._annulation.set()
+        self.statut.SetLabel("Annulation demandée…")
+
+    def _resultat_selectionne(self) -> tuple[str, EntreeDistante] | None:
+        index = self.liste.GetSelection()
+        if index == wx.NOT_FOUND or index >= len(self._resultats):
+            return None
+        return self._resultats[index]
+
+    def _sur_aller(self, evt):
+        resultat = self._resultat_selectionne()
+        if resultat is None:
+            return
+        chemin, entree = resultat
+        self.panneau.aller_a_resultat_recherche(chemin, entree.dossier)
+        self.EndModal(wx.ID_OK)
+
+    def _sur_fermeture(self, evt):
+        if self._en_cours and self._annulation is not None:
+            self._annulation.set()
+        self.EndModal(wx.ID_CANCEL)
+
+
+# --------------------------------------------------------------------------
 # Boîtes de dialogue : profils de connexion SSH
 # --------------------------------------------------------------------------
 
@@ -2881,10 +3114,15 @@ class Fenetre(wx.Frame):
         )
         self.Bind(wx.EVT_MENU, lambda e: self.telecharger_entree_sftp(),
                   self.item_telecharger_sftp)
+        self.item_rechercher_sftp = m_session.Append(
+            wx.ID_ANY, "Re&chercher des fichiers…  Ctrl+Maj+G"
+        )
+        self.Bind(wx.EVT_MENU, lambda e: self.rechercher_fichiers_sftp(),
+                  self.item_rechercher_sftp)
         self.items_action_fichiers = [
             self.item_nouveau_dossier_sftp, self.item_renommer_sftp,
             self.item_supprimer_sftp, self.item_envoyer_sftp,
-            self.item_telecharger_sftp,
+            self.item_telecharger_sftp, self.item_rechercher_sftp,
         ]
         self.Bind(wx.EVT_MENU,
                   lambda e: self.gerer_favoris_sftp(),
@@ -3469,6 +3707,18 @@ class Fenetre(wx.Frame):
         else:
             panneau.saisie.SetFocus()
 
+    def rechercher_fichiers_sftp(self):
+        panneau = self.session()
+        if panneau is None or not panneau.mode_navigation:
+            self.voix.dire(
+                "Cette action nécessite le mode navigation (Ctrl+Maj+F).",
+                interrompre=True,
+            )
+            return
+        with DialogueRechercheFichiers(self, panneau) as boite:
+            boite.ShowModal()
+        panneau.liste_fichiers.SetFocus()
+
     def repeter_saisie(self):
         panneau = self.session()
         if panneau is not None:
@@ -3799,6 +4049,10 @@ class Fenetre(wx.Frame):
 
         if ctrl and maj and code == ord("T"):
             self.telecharger_entree_sftp()
+            return
+
+        if ctrl and maj and code == ord("G"):
+            self.rechercher_fichiers_sftp()
             return
 
         if ctrl and maj and code == ord("A"):

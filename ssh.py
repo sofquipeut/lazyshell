@@ -463,6 +463,72 @@ class ExecuteurSSH:
             entrees.sort(key=lambda e: (not e.dossier, e.nom.lower()))
             return entrees
 
+    def rechercher_fichiers(
+        self,
+        chemin_racine: str,
+        motif: str,
+        sur_dossier_explore: Callable[[str], None] | None = None,
+        doit_annuler: Callable[[], bool] | None = None,
+    ) -> list[tuple[str, EntreeDistante]]:
+        """Recherche récursive, insensible à la casse, des fichiers et
+        dossiers dont le nom contient motif, à partir de chemin_racine.
+        Bloque : à appeler hors thread principal. Renvoie une liste de
+        (chemin_complet, entrée), dans l'ordre de parcours.
+
+        Ne suit jamais un lien vers un dossier : le protocole SFTP ne
+        donne aucune garantie qu'un lien ne se referme pas sur un de ses
+        propres ancêtres, ce qui bouclerait indéfiniment.
+
+        Un dossier illisible (droits refusés en cours de route) est
+        ignoré plutôt que d'interrompre toute la recherche : la même
+        philosophie que sur_dossier_explore côté appelant, plus utile
+        qu'un échec complet pour une seule branche inaccessible de
+        l'arborescence.
+
+        sur_dossier_explore(chemin), si fourni, est appelé à chaque
+        dossier visité — un signe de vie pendant un parcours profond, où
+        aucun résultat ne remonterait sinon avant la toute fin.
+        doit_annuler(), si fourni et qu'il renvoie True, arrête le
+        parcours au prochain dossier : les résultats déjà trouvés sont
+        renvoyés tels quels, une recherche annulée n'est pas un échec.
+        """
+        motif_normalise = motif.lower()
+        resultats: list[tuple[str, EntreeDistante]] = []
+        self._rechercher_fichiers_recursif(
+            chemin_racine, motif_normalise, resultats,
+            sur_dossier_explore, doit_annuler,
+        )
+        return resultats
+
+    def _rechercher_fichiers_recursif(
+        self,
+        chemin: str,
+        motif: str,
+        resultats: list[tuple[str, EntreeDistante]],
+        sur_dossier_explore: Callable[[str], None] | None,
+        doit_annuler: Callable[[], bool] | None,
+    ) -> None:
+        if doit_annuler is not None and doit_annuler():
+            return
+        if sur_dossier_explore is not None:
+            sur_dossier_explore(chemin)
+        try:
+            entrees = self.lister_repertoire(chemin)
+        except OSError:
+            logging.exception("Dossier ignoré (recherche), illisible : %s", chemin)
+            return
+        for entree in entrees:
+            if doit_annuler is not None and doit_annuler():
+                return
+            chemin_enfant = f"{chemin.rstrip('/')}/{entree.nom}"
+            if motif in entree.nom.lower():
+                resultats.append((chemin_enfant, entree))
+            if entree.dossier and not entree.lien:
+                self._rechercher_fichiers_recursif(
+                    chemin_enfant, motif, resultats,
+                    sur_dossier_explore, doit_annuler,
+                )
+
     def renommer(self, ancien_chemin: str, nouveau_chemin: str) -> None:
         with self._verrou_navigation:
             self._sftp_persistant().rename(ancien_chemin, nouveau_chemin)
