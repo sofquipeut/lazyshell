@@ -80,15 +80,37 @@ mot de passe n'est redemandé que s'il n'est pas déjà mémorisé dans le
 Gestionnaire d'identifiants Windows. La session continue ensuite dans
 le même onglet, avec son historique intact : rien à rouvrir.</p>
 
-<p>En session locale, Ctrl+Espace complète le mot en cours de saisie
-(fichier ou dossier) avec le contenu du répertoire courant : une boîte
-liste les candidats, les flèches les parcourent, Entrée choisit et
-Échap referme sans rien changer. Un nom contenant un espace est
-automatiquement entouré d'apostrophes pour rester un seul argument ; un
-dossier complété se termine par un séparateur, pour pouvoir relancer
-Ctrl+Espace dessus et descendre d'un niveau. Non disponible en session
-distante (SSH), qui n'a pas d'arborescence à consulter sans un
-aller-retour réseau à chaque frappe.</p>
+<h3>Complétion de chemin (Ctrl+Espace)</h3>
+
+<p>En session locale uniquement (non disponible en SSH, qui n'a pas
+d'arborescence à consulter sans un aller-retour réseau à chaque frappe),
+Ctrl+Espace complète le nom de fichier ou de dossier en train d'être
+tapé dans la saisie, à partir du contenu réel du répertoire courant.</p>
+
+<p>Pour l'utiliser :</p>
+
+<ol>
+<li>Taper le début d'un nom de fichier ou de dossier (éventuellement
+précédé d'un chemin, par exemple <code>cd Doc</code> ou
+<code>type C:\temp\rap</code>), curseur juste après ce début.</li>
+<li>Ctrl+Espace : une boîte « Complétion » s'ouvre avec la liste des
+fichiers et dossiers du répertoire concerné dont le nom commence par ce
+qui a été tapé (recherche insensible à la casse).</li>
+<li>Parcourir la liste aux flèches — chaque candidat est annoncé au fur
+et à mesure, comme n'importe quelle liste.</li>
+<li>Entrée (ou le bouton Choisir) insère le candidat sélectionné dans la
+saisie, à la place du début tapé ; Échap (ou Annuler) referme la boîte
+sans rien changer et laisse la saisie telle qu'elle était.</li>
+</ol>
+
+<p>Deux détails pratiques : un nom contenant un espace (par exemple
+« terminal accessible ») est automatiquement entouré d'apostrophes une
+fois inséré, pour qu'il reste un seul argument de la commande plutôt que
+d'être coupé en deux ; et un dossier complété se termine par un
+séparateur (<code>\</code>), ce qui permet d'enchaîner un second
+Ctrl+Espace juste après pour descendre d'un niveau et compléter le
+segment suivant du chemin, sans avoir à retaper le début du chemin déjà
+complété.</p>
 
 <h2 id="navigation">Mode navigation (SFTP)</h2>
 
@@ -236,7 +258,7 @@ corbeille côté serveur : une suppression SFTP est définitive.</p>
 <tr><td>Ctrl+Maj+D</td><td>Changer de répertoire courant</td></tr>
 </table>
 
-<h3>Commandes enregistrées</h3>
+<h3 id="commandes">Commandes enregistrées</h3>
 <table>
 <tr><th scope="col">Touche</th><th scope="col">Action</th></tr>
 <tr><td>Ctrl+Maj+J</td><td>Utiliser une commande enregistrée</td></tr>
@@ -246,9 +268,26 @@ corbeille côté serveur : une suppression SFTP est définitive.</p>
 <p>Dans les boîtes de gestion (commandes enregistrées, favoris de
 dossiers distants, profils SSH), la touche Suppr supprime directement
 l'élément sélectionné, avec la même confirmation que le bouton
-Supprimer. Les commandes enregistrées et les favoris peuvent en plus
-être réordonnés (boutons Monter/Descendre, ou Ctrl+Flèche haut/bas) :
-l'ordre choisi est conservé d'une session à l'autre.</p>
+Supprimer — pas besoin de déplacer le focus jusqu'au bouton dédié.</p>
+
+<p>Les commandes enregistrées et les favoris de dossiers distants
+peuvent en plus être réordonnés, à la souris (boutons Monter et
+Descendre) comme au clavier (Ctrl+Flèche haut / Ctrl+Flèche bas, sans
+avoir à quitter la liste). Sélectionner l'élément à déplacer, puis
+Ctrl+Flèche haut ou Ctrl+Flèche bas : il échange sa place avec son
+voisin dans cette direction, la sélection le suit (pas besoin de la
+retrouver après le déplacement), et une annonce vocale automatique
+donne sa nouvelle position à chaque échange, par exemple « Sauvegarde
+quotidienne, position 2 sur 5. » — utile pour suivre le classement sans
+avoir à relire toute la liste après chaque déplacement. Répéter
+Ctrl+Flèche haut/bas déplace l'élément d'un cran de plus à chaque fois.
+Arrivé en haut ou en bas de la liste, une annonce le signale (« déjà en
+haut de la liste » / « déjà en bas de la liste ») plutôt que de rester
+silencieux. L'ordre choisi est conservé d'une session à l'autre (écrit
+dans <code>commands.json</code> ou <code>ssh_profiles.json</code> selon
+le cas). La gestion des profils SSH n'a pas cette possibilité de
+réordonnancement, seulement Suppr : ses profils n'ont pas d'ordre qui
+compte à l'usage.</p>
 
 <h3>Blocs de sortie</h3>
 <table>

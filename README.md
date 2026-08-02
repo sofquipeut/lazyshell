@@ -39,6 +39,14 @@ De plus, j'utilisais WinSCP en parallèle pour parcourir un serveur distant, afi
   actif, en local comme en SSH.
 - Vérification silencieuse des mises à jour au démarrage (menu Aide pour
   la refaire à la demande).
+- Complétion de chemin en session locale (Ctrl+Espace) : propose les
+  fichiers/dossiers du répertoire courant à partir du mot en train
+  d'être tapé (détail dans la [documentation](docs/index.html#fonctionnement)).
+- Réordonnancement des commandes enregistrées et des favoris de
+  dossiers distants (boutons Monter/Descendre ou Ctrl+Flèche haut/bas,
+  avec annonce vocale de la nouvelle position) ; touche Suppr pour
+  supprimer directement dans ces listes et dans la gestion des profils
+  SSH (détail dans la [documentation](docs/index.html#commandes)).
 
 ## Installation
 
