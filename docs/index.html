@@ -80,6 +80,16 @@ mot de passe n'est redemandé que s'il n'est pas déjà mémorisé dans le
 Gestionnaire d'identifiants Windows. La session continue ensuite dans
 le même onglet, avec son historique intact : rien à rouvrir.</p>
 
+<p>En session locale, Ctrl+Espace complète le mot en cours de saisie
+(fichier ou dossier) avec le contenu du répertoire courant : une boîte
+liste les candidats, les flèches les parcourent, Entrée choisit et
+Échap referme sans rien changer. Un nom contenant un espace est
+automatiquement entouré d'apostrophes pour rester un seul argument ; un
+dossier complété se termine par un séparateur, pour pouvoir relancer
+Ctrl+Espace dessus et descendre d'un niveau. Non disponible en session
+distante (SSH), qui n'a pas d'arborescence à consulter sans un
+aller-retour réseau à chaque frappe.</p>
+
 <h2 id="navigation">Mode navigation (SFTP)</h2>
 
 <p>Une session SSH peut basculer (Ctrl+Maj+F) entre le terminal habituel
@@ -210,6 +220,7 @@ corbeille côté serveur : une suppression SFTP est définitive.</p>
 <tr><td>F6</td><td>Basculer entre saisie et sortie</td></tr>
 <tr><td>Échap</td><td>Revenir au champ de saisie</td></tr>
 <tr><td>Flèche haut / bas</td><td>Historique des commandes (dans la saisie)</td></tr>
+<tr><td>Ctrl+Espace</td><td>Compléter le chemin sous le curseur (session locale uniquement)</td></tr>
 <tr><td>Ctrl+Maj+K (ou Ctrl+Pause)</td><td>Interrompre la commande en cours</td></tr>
 <tr><td>Ctrl+= / Ctrl+-</td><td>Agrandir / réduire la police</td></tr>
 </table>
@@ -231,6 +242,13 @@ corbeille côté serveur : une suppression SFTP est définitive.</p>
 <tr><td>Ctrl+Maj+J</td><td>Utiliser une commande enregistrée</td></tr>
 <tr><td>Ctrl+Maj+M</td><td>Enregistrer la commande actuelle</td></tr>
 </table>
+
+<p>Dans les boîtes de gestion (commandes enregistrées, favoris de
+dossiers distants, profils SSH), la touche Suppr supprime directement
+l'élément sélectionné, avec la même confirmation que le bouton
+Supprimer. Les commandes enregistrées et les favoris peuvent en plus
+être réordonnés (boutons Monter/Descendre, ou Ctrl+Flèche haut/bas) :
+l'ordre choisi est conservé d'une session à l'autre.</p>
 
 <h3>Blocs de sortie</h3>
 <table>
