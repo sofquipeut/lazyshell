@@ -44,7 +44,7 @@ from ssh import (
 )
 
 APP_NOM = "LazyShell"
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 
 # Dépôt GitHub public du projet, pour la vérification des mises à jour.
 URL_DERNIERE_RELEASE = "https://api.github.com/repos/sofquipeut/lazyshell/releases/latest"
@@ -1030,6 +1030,10 @@ class PanneauSession(wx.Panel):
             self.envoyer()
             return
 
+        if ctrl and code == wx.WXK_SPACE:
+            self._completer_chemin()
+            return
+
         # L'historique ne prend la main qu'aux extrémités du texte : au
         # milieu d'une commande multiligne, les flèches doivent déplacer
         # le curseur normalement.
@@ -1058,6 +1062,131 @@ class PanneauSession(wx.Panel):
             self.voix.dire("Saisie vide.", braille="(vide)", interrompre=True)
             return
         self.voix.dire(texte, braille=texte, interrompre=True)
+
+    def _completer_chemin(self) -> None:
+        """Complète le nom de fichier/dossier sous le curseur (Ctrl+Espace).
+
+        Local uniquement : une session distante n'a pas d'arborescence à
+        consulter sans un aller-retour réseau à chaque frappe, hors de
+        question sur le fil principal (contrainte non négociable, voir
+        CLAUDE.md). Ouvre DialogueCompletionChemin (même schéma que
+        DialogueChoisirCommande : liste, Entrée choisit via le bouton par
+        défaut, Échap referme sans rien changer) plutôt que
+        wx.TextCtrl.AutoComplete() : ce contrôle est en TE_MULTILINE, où
+        Entrée envoie déjà la commande (sur_touche_saisie) — un popup
+        natif se disputerait Entrée/flèches avec ce comportement existant,
+        même famille de risque que les accélérateurs fantômes de menu
+        (voir la décision sur la gestion manuelle des raccourcis).
+        """
+        if self.distant:
+            self.voix.dire("Complétion non disponible en session distante.", interrompre=True)
+            return
+
+        texte = self.saisie.GetValue()
+        position = self.saisie.GetInsertionPoint()
+        avant = texte[:position]
+        apres = texte[position:]
+
+        jeton = self._jeton_courant(avant)
+        dans_quote = jeton.startswith("'")
+        candidats = self._candidats_completion(jeton[1:] if dans_quote else jeton)
+        if not candidats:
+            self.voix.dire("Aucune complétion.", interrompre=True)
+            return
+
+        avant_token = avant[: len(avant) - len(jeton)]
+        boite = DialogueCompletionChemin(self, candidats)
+        resultat = boite.ShowModal()
+        candidat = boite.candidat_choisi
+        boite.Destroy()
+
+        if resultat != wx.ID_OK or candidat is None:
+            self.saisie.SetFocus()
+            self.saisie.SetInsertionPoint(position)
+            return
+
+        # Un nom avec un espace (« terminal accessible ») doit être mis
+        # entre apostrophes pour rester un seul argument PowerShell ;
+        # sans ça la commande complétée ne s'exécuterait pas comme prévu.
+        # Si on est déjà à l'intérieur d'une apostrophe ouverte par une
+        # complétion précédente, elle sert de fermeture : pas besoin d'en
+        # rajouter une, le curseur reste avant elle pour pouvoir
+        # continuer à compléter le segment suivant du chemin.
+        if dans_quote:
+            # L'apostrophe ouvrante faisait partie du jeton reconnu par
+            # _jeton_courant (pour que _candidats_completion travaille
+            # sur le chemin sans elle) : elle a donc disparu d'avant_token
+            # au découpage, il faut la remettre ici.
+            contenu = f"'{candidat}"
+            position_curseur = len(avant_token) + len(contenu)
+        elif " " in candidat:
+            contenu = f"'{candidat}'"
+            position_curseur = len(avant_token) + 1 + len(candidat)
+        else:
+            contenu = candidat
+            position_curseur = len(avant_token) + len(contenu)
+
+        self.saisie.SetFocus()
+        self.saisie.ChangeValue(avant_token + contenu + apres)
+        self.saisie.SetInsertionPoint(position_curseur)
+
+    @staticmethod
+    def _jeton_courant(avant: str) -> str:
+        """Dernier mot du texte avant le curseur, celui à compléter.
+
+        Si le curseur est à l'intérieur d'une apostrophe encore ouverte
+        (posée par une complétion précédente sur un nom contenant un
+        espace), le jeton commence à cette apostrophe : l'espace dans un
+        nom déjà complété ne doit pas être confondu avec la séparation
+        entre deux arguments de la commande.
+        """
+        derniere_apostrophe = avant.rfind("'")
+        if (
+            derniere_apostrophe != -1
+            and avant.count("'", 0, derniere_apostrophe + 1) % 2 == 1
+        ):
+            return avant[derniere_apostrophe:]
+        index = max(
+            avant.rfind(" "), avant.rfind("\n"), avant.rfind("\t"), avant.rfind("'"),
+        )
+        return avant[index + 1:]
+
+    def _candidats_completion(self, jeton: str) -> list[str]:
+        """Noms de fichiers/dossiers locaux dont le dernier segment du
+        jeton est un préfixe (insensible à la casse), triés, avec un
+        séparateur ajouté pour un dossier — pratique déjà connue des
+        utilisateurs de shell (on peut relancer Ctrl+Espace dessus pour
+        descendre d'un niveau)."""
+        import os
+
+        separateur = max(jeton.rfind("/"), jeton.rfind("\\"))
+        if separateur == -1:
+            prefixe_chemin = ""
+            debut_nom = jeton
+        else:
+            prefixe_chemin = jeton[: separateur + 1]
+            debut_nom = jeton[separateur + 1:]
+
+        if prefixe_chemin:
+            chemin_dossier = os.path.expanduser(prefixe_chemin)
+            if not os.path.isabs(chemin_dossier):
+                chemin_dossier = os.path.join(self.repertoire, chemin_dossier)
+        else:
+            chemin_dossier = self.repertoire
+
+        try:
+            entrees = os.listdir(chemin_dossier)
+        except OSError:
+            return []
+
+        correspondances = sorted(
+            nom for nom in entrees if nom.lower().startswith(debut_nom.lower())
+        )
+        resultats = []
+        for nom in correspondances:
+            est_dossier = os.path.isdir(os.path.join(chemin_dossier, nom))
+            resultats.append(f"{prefixe_chemin}{nom}{os.sep if est_dossier else ''}")
+        return resultats
 
     def sur_frappe_dans_sortie(self, evt):
         """Une frappe dans le champ de sortie bascule vers la saisie.
@@ -2212,14 +2341,18 @@ class DialogueFavoris(wx.Dialog):
         bouton_ajouter.Bind(wx.EVT_BUTTON, self._sur_ajouter)
         bouton_modifier = wx.Button(self, label="&Modifier…")
         bouton_modifier.Bind(wx.EVT_BUTTON, self._sur_modifier)
+        bouton_monter = wx.Button(self, label="M&onter")
+        bouton_monter.Bind(wx.EVT_BUTTON, self._sur_monter)
+        bouton_descendre = wx.Button(self, label="&Descendre")
+        bouton_descendre.Bind(wx.EVT_BUTTON, self._sur_descendre)
         bouton_supprimer = wx.Button(self, label="&Supprimer")
         bouton_supprimer.Bind(wx.EVT_BUTTON, self._sur_supprimer)
         bouton_fermer = wx.Button(self, id=wx.ID_CANCEL, label="Fer&mer")
 
         boutons = wx.BoxSizer(wx.HORIZONTAL)
         for bouton in (
-            bouton_aller, bouton_ajouter, bouton_modifier, bouton_supprimer,
-            bouton_fermer,
+            bouton_aller, bouton_ajouter, bouton_modifier, bouton_monter,
+            bouton_descendre, bouton_supprimer, bouton_fermer,
         ):
             boutons.Add(bouton, 0, wx.RIGHT, 6)
 
@@ -2228,8 +2361,9 @@ class DialogueFavoris(wx.Dialog):
         boite.Add(self.liste, 1, wx.EXPAND | wx.ALL, 8)
         boite.Add(boutons, 0, wx.ALIGN_RIGHT | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
         self.SetSizer(boite)
-        self.SetSize((520, 320))
+        self.SetSize((580, 320))
         self.liste.SetFocus()
+        self.Bind(wx.EVT_CHAR_HOOK, self._sur_touche)
 
     def _libelles(self) -> list[str]:
         return [f"{f.nom} — {f.chemin}" for f in self.panneau.profil.favoris]
@@ -2295,6 +2429,49 @@ class DialogueFavoris(wx.Dialog):
         self.panneau.profil.favoris.remove(favori)
         self._rafraichir()
         self.panneau.voix.dire("Favori supprimé.", interrompre=True)
+
+    def _sur_monter(self, evt):
+        favori = self._selection()
+        if favori is None:
+            return
+        favoris = self.panneau.profil.favoris
+        index = favoris.index(favori)
+        if index == 0:
+            self.panneau.voix.dire("Favori déjà en haut de la liste.", interrompre=True)
+            return
+        favoris[index - 1], favoris[index] = favoris[index], favoris[index - 1]
+        self._rafraichir(favori)
+        self.panneau.voix.dire(
+            f"{favori.nom}, position {index} sur {len(favoris)}.", interrompre=True,
+        )
+
+    def _sur_descendre(self, evt):
+        favori = self._selection()
+        if favori is None:
+            return
+        favoris = self.panneau.profil.favoris
+        index = favoris.index(favori)
+        if index >= len(favoris) - 1:
+            self.panneau.voix.dire("Favori déjà en bas de la liste.", interrompre=True)
+            return
+        favoris[index + 1], favoris[index] = favoris[index], favoris[index + 1]
+        self._rafraichir(favori)
+        self.panneau.voix.dire(
+            f"{favori.nom}, position {index + 2} sur {len(favoris)}.", interrompre=True,
+        )
+
+    def _sur_touche(self, evt):
+        code = evt.GetKeyCode()
+        if code in (wx.WXK_DELETE, wx.WXK_NUMPAD_DELETE):
+            self._sur_supprimer(evt)
+            return
+        if evt.ControlDown() and code == wx.WXK_UP:
+            self._sur_monter(evt)
+            return
+        if evt.ControlDown() and code == wx.WXK_DOWN:
+            self._sur_descendre(evt)
+            return
+        evt.Skip()
 
 
 # --------------------------------------------------------------------------
@@ -2739,6 +2916,7 @@ class DialogueGestionProfils(wx.Dialog):
         self.SetSizer(boite)
         self.SetSize((520, 320))
         self.liste.SetFocus()
+        self.Bind(wx.EVT_CHAR_HOOK, self._sur_touche)
 
     def _libelles(self):
         return [f"{p.nom} — {p.utilisateur}@{p.hote}:{p.port}" for p in self.profils]
@@ -2810,6 +2988,12 @@ class DialogueGestionProfils(wx.Dialog):
         supprimer_secret(profil)
         self.profils.remove(profil)
         self._rafraichir()
+
+    def _sur_touche(self, evt):
+        if evt.GetKeyCode() in (wx.WXK_DELETE, wx.WXK_NUMPAD_DELETE):
+            self._sur_supprimer(evt)
+            return
+        evt.Skip()
 
 
 # --------------------------------------------------------------------------
@@ -2885,6 +3069,7 @@ class DialogueGestionCommandes(wx.Dialog):
             style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
         )
         self.commandes = charger_commandes()
+        self.voix = parent.voix
 
         etiquette = wx.StaticText(self, label="&Commandes :")
         self.liste = wx.ListBox(self, choices=self._libelles())
@@ -2893,12 +3078,19 @@ class DialogueGestionCommandes(wx.Dialog):
         bouton_nouveau.Bind(wx.EVT_BUTTON, self._sur_nouveau)
         bouton_modifier = wx.Button(self, label="&Modifier…")
         bouton_modifier.Bind(wx.EVT_BUTTON, self._sur_modifier)
+        bouton_monter = wx.Button(self, label="M&onter")
+        bouton_monter.Bind(wx.EVT_BUTTON, self._sur_monter)
+        bouton_descendre = wx.Button(self, label="&Descendre")
+        bouton_descendre.Bind(wx.EVT_BUTTON, self._sur_descendre)
         bouton_supprimer = wx.Button(self, label="&Supprimer")
         bouton_supprimer.Bind(wx.EVT_BUTTON, self._sur_supprimer)
         bouton_fermer = wx.Button(self, id=wx.ID_CANCEL, label="Fer&mer")
 
         boutons = wx.BoxSizer(wx.HORIZONTAL)
-        for bouton in (bouton_nouveau, bouton_modifier, bouton_supprimer, bouton_fermer):
+        for bouton in (
+            bouton_nouveau, bouton_modifier, bouton_monter, bouton_descendre,
+            bouton_supprimer, bouton_fermer,
+        ):
             boutons.Add(bouton, 0, wx.RIGHT, 6)
 
         boite = wx.BoxSizer(wx.VERTICAL)
@@ -2906,8 +3098,9 @@ class DialogueGestionCommandes(wx.Dialog):
         boite.Add(self.liste, 1, wx.EXPAND | wx.ALL, 8)
         boite.Add(boutons, 0, wx.ALIGN_RIGHT | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
         self.SetSizer(boite)
-        self.SetSize((520, 320))
+        self.SetSize((560, 320))
         self.liste.SetFocus()
+        self.Bind(wx.EVT_CHAR_HOOK, self._sur_touche)
 
     def _libelles(self):
         return [f"{c.nom} — {c.commande}" for c in self.commandes]
@@ -2966,6 +3159,53 @@ class DialogueGestionCommandes(wx.Dialog):
         self.commandes.remove(commande)
         self._rafraichir()
 
+    def _sur_monter(self, evt):
+        commande = self._selection()
+        if commande is None:
+            return
+        index = self.commandes.index(commande)
+        if index == 0:
+            self.voix.dire("Commande déjà en haut de la liste.", interrompre=True)
+            return
+        self.commandes[index - 1], self.commandes[index] = (
+            self.commandes[index], self.commandes[index - 1],
+        )
+        self._rafraichir(commande.nom)
+        self.voix.dire(
+            f"{commande.nom}, position {index} sur {len(self.commandes)}.",
+            interrompre=True,
+        )
+
+    def _sur_descendre(self, evt):
+        commande = self._selection()
+        if commande is None:
+            return
+        index = self.commandes.index(commande)
+        if index >= len(self.commandes) - 1:
+            self.voix.dire("Commande déjà en bas de la liste.", interrompre=True)
+            return
+        self.commandes[index + 1], self.commandes[index] = (
+            self.commandes[index], self.commandes[index + 1],
+        )
+        self._rafraichir(commande.nom)
+        self.voix.dire(
+            f"{commande.nom}, position {index + 2} sur {len(self.commandes)}.",
+            interrompre=True,
+        )
+
+    def _sur_touche(self, evt):
+        code = evt.GetKeyCode()
+        if code in (wx.WXK_DELETE, wx.WXK_NUMPAD_DELETE):
+            self._sur_supprimer(evt)
+            return
+        if evt.ControlDown() and code == wx.WXK_UP:
+            self._sur_monter(evt)
+            return
+        if evt.ControlDown() and code == wx.WXK_DOWN:
+            self._sur_descendre(evt)
+            return
+        evt.Skip()
+
 
 class DialogueChoisirCommande(wx.Dialog):
     """Choisir une commande enregistrée à placer dans la saisie.
@@ -3013,6 +3253,53 @@ class DialogueChoisirCommande(wx.Dialog):
         if index == wx.NOT_FOUND:
             return
         self.commande_choisie = self.commandes[index]
+        self.EndModal(wx.ID_OK)
+
+
+class DialogueCompletionChemin(wx.Dialog):
+    """Choisir un candidat de complétion de chemin (Ctrl+Espace).
+
+    Même schéma que DialogueChoisirCommande ci-dessus : la liste des
+    candidats est déjà connue à l'ouverture (pas de recherche ici), les
+    flèches la parcourent nativement, Entrée choisit via le bouton par
+    défaut, Échap (ou le bouton Annuler) referme sans rien choisir —
+    _completer_chemin restaure alors la saisie telle quelle."""
+
+    def __init__(self, parent, candidats: list[str]):
+        super().__init__(
+            parent, title="Complétion",
+            style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
+        )
+        self.candidats = candidats
+        self.candidat_choisi: str | None = None
+
+        etiquette = wx.StaticText(self, label="&Candidats :")
+        self.liste = wx.ListBox(self, choices=candidats)
+        self.liste.SetSelection(0)
+        self.liste.Bind(wx.EVT_LISTBOX_DCLICK, self._sur_choisir)
+
+        bouton_choisir = wx.Button(self, label="&Choisir")
+        bouton_choisir.SetDefault()
+        bouton_choisir.Bind(wx.EVT_BUTTON, self._sur_choisir)
+        bouton_annuler = wx.Button(self, id=wx.ID_CANCEL, label="A&nnuler")
+
+        boutons = wx.BoxSizer(wx.HORIZONTAL)
+        boutons.Add(bouton_choisir, 0, wx.RIGHT, 6)
+        boutons.Add(bouton_annuler, 0)
+
+        boite = wx.BoxSizer(wx.VERTICAL)
+        boite.Add(etiquette, 0, wx.LEFT | wx.RIGHT | wx.TOP, 8)
+        boite.Add(self.liste, 1, wx.EXPAND | wx.ALL, 8)
+        boite.Add(boutons, 0, wx.ALIGN_RIGHT | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+        self.SetSizer(boite)
+        self.SetSize((420, 320))
+        self.liste.SetFocus()
+
+    def _sur_choisir(self, evt):
+        index = self.liste.GetSelection()
+        if index == wx.NOT_FOUND:
+            return
+        self.candidat_choisi = self.candidats[index]
         self.EndModal(wx.ID_OK)
 
 
@@ -3799,7 +4086,7 @@ class Fenetre(wx.Frame):
         for index in range(self.carnet.GetPageCount()):
             self.carnet.GetPage(index).redessiner()
         enregistrer_reglages(self.reglages)
-        etat = "affiche" if self.reglages.afficher_horodatage else "masque"
+        etat = "affiché" if self.reglages.afficher_horodatage else "masqué"
         self.SetStatusText(f"Horodatage {etat}")
         self.voix.dire(f"Horodatage {etat}.", interrompre=True)
         logging.info("Horodatage %s", etat)

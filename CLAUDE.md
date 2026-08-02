@@ -1146,11 +1146,13 @@ L'environnement Python est dans `venv`. Utiliser
   la fin ; et, côté boîte de dialogue, un vrai `wx.MainLoop()` borné
   (`wx.CallLater`) montrant des résultats déjà visibles dans la liste
   pendant que la recherche tourne encore, puis un Annuler qui ferme
-  bien la boîte dans le même geste. Reste à vérifier en conditions
-  réelles avec NVDA et un vrai serveur : la vitesse ressentie sur une
-  arborescence réelle, le focus qui atterrit bien sur le champ de
-  motif à l'ouverture, et celui qui se déplace bien sur la liste dès
-  Entrée pressée dans ce champ.
+  bien la boîte dans le même geste.
+
+  Vérifié ensuite en conditions réelles avec NVDA sur un vrai serveur :
+  focus correct (champ de motif à l'ouverture, liste de résultats dès
+  Entrée pressée), et vitesse jugée bonne (16 résultats en quelques
+  secondes) — plus long attendu sur une arborescence à beaucoup de
+  fichiers, sans que ça ait été chiffré précisément.
 
 - **Recherche de fichiers : Échap ferme la boîte même pendant une
   recherche en cours, malgré le blocage codé juste au-dessus —
@@ -1183,6 +1185,64 @@ L'environnement Python est dans `venv`. Utiliser
   pour Ctrl+C/Ctrl+V n'apparaît pas ici : revenu en arrière avant
   publication, aucun effet net pour l'utilisateur — voir plus haut dans
   ce journal pour le détail.)
+
+- **Boutons Monter/Descendre pour réordonner, et touche Suppr pour
+  supprimer, dans les commandes enregistrées, les dossiers favoris et le
+  gestionnaire de profils SSH.** Demandé par l'utilisateur. Monter/Descendre
+  (`_sur_monter`/`_sur_descendre` dans `DialogueGestionCommandes` et
+  `DialogueFavoris`, mnémoniques `o`/`D` pour ne pas entrer en collision
+  avec Modifier/Nouvelle/Supprimer/Fermer) échangent l'élément sélectionné
+  avec son voisin, la sélection suit l'élément déplacé, l'ordre est
+  persisté normalement (`_rafraichir()` appelle déjà
+  `enregistrer_commandes`/`sauvegarder_favoris`). Suppr agit comme le
+  bouton Supprimer (même boîte de confirmation) dans ces deux dialogues et
+  dans `DialogueGestionProfils` (celui-ci sans réordonnancement, non
+  demandé). Implémenté via `EVT_CHAR_HOOK` sur la boîte de dialogue plutôt
+  qu'un `Bind(EVT_KEY_DOWN)` sur la `wx.ListBox` elle-même : même
+  précaution que pour Entrée/flèches/Suppr/F2 en mode navigation SFTP (voir
+  plus haut), ce contrôle ne remontant pas toutes les touches de façon
+  fiable par ce mécanisme. Vérifié par l'utilisateur au clavier avec
+  NVDA : Monter/Descendre dans Favoris et Commandes, persistance de
+  l'ordre après réouverture, et Suppr dans les trois dialogues.
+
+- **Bug réel remonté en usage : l'annonce vocale et le statut
+  d'« Horodatage » (Ctrl+Maj+H) perdaient l'accent final d'« affiché »/
+  « masqué ».** `basculer_horodatage` écrivait `"affiche"`/`"masque"`
+  (sans le é), contrairement à `basculer_suivi` juste au-dessus qui écrit
+  correctement `"activé"`/`"désactivé"` — pas un simple accent avalé à la
+  lecture, mais un mot différent (« affiche », nom ou verbe, prononcé
+  autrement qu'« affiché »). Corrigé en ajoutant les deux é. Vérifié par
+  l'utilisateur.
+
+- **Complétion de chemin en local, Ctrl+Espace.** Sur le dernier mot
+  avant le curseur dans la saisie, propose les fichiers/dossiers du
+  répertoire courant dont ce mot est un préfixe (insensible à la casse).
+  Local uniquement (`PanneauSession._completer_chemin`) : une session
+  distante n'a pas d'arborescence à consulter sans un aller-retour
+  réseau à chaque frappe, hors de question sur le fil principal
+  (contrainte non négociable, voir en tête de ce fichier). Nouvelle
+  boîte `DialogueCompletionChemin`, même schéma que
+  `DialogueChoisirCommande` (liste déjà connue à l'ouverture, Entrée
+  choisit via le bouton par défaut, Échap referme sans rien changer) au
+  lieu de `wx.TextCtrl.AutoComplete()` : la saisie est en
+  `TE_MULTILINE`, où Entrée envoie déjà la commande — un popup natif
+  disputerait Entrée/flèches à ce comportement existant, même famille
+  de risque que les accélérateurs fantômes de menu (voir la décision
+  sur la gestion manuelle des raccourcis). Un nom de fichier avec un
+  espace est entouré d'apostrophes à l'insertion pour rester un seul
+  argument PowerShell (`_jeton_courant` reconnaît une apostrophe encore
+  ouverte par une complétion précédente, pour pouvoir enchaîner
+  Ctrl+Espace segment par segment d'un chemin sans que l'espace du
+  segment déjà complété soit pris pour une séparation d'arguments) ; un
+  candidat qui est un dossier reçoit un séparateur en fin de nom, pour
+  pouvoir relancer Ctrl+Espace dessus et descendre d'un niveau. Vérifié
+  par l'utilisateur au clavier avec NVDA.
+
+- **Version 1.6.0.** Regroupe tout ce qui précède depuis la 1.5.0 :
+  Monter/Descendre/Suppr dans les commandes enregistrées, les favoris et
+  la gestion des profils SSH, correction de l'accent d'« affiché »/
+  « masqué » pour l'horodatage, et la nouvelle complétion de chemin en
+  local (Ctrl+Espace).
 
 ## Idées à reprendre plus tard
 
