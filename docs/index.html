@@ -112,6 +112,36 @@ Ctrl+Espace juste après pour descendre d'un niveau et compléter le
 segment suivant du chemin, sans avoir à retaper le début du chemin déjà
 complété.</p>
 
+<h3>Pourquoi <code>cd</code> ne suffit pas pour changer de répertoire</h3>
+
+<p>Chaque commande envoyée démarre son propre processus PowerShell (ou,
+en SSH, sa propre exécution sur le serveur), qui se termine dès la
+commande terminée : rien ne reste ouvert entre deux commandes, il n'y a
+jamais un seul shell continu qui persisterait d'une commande à l'autre.
+Taper <code>cd un_dossier</code> et l'envoyer change donc bien de
+répertoire, mais seulement à l'intérieur de ce processus éphémère, qui
+disparaît aussitôt après — sans aucune erreur ni avertissement. La
+commande suivante repart silencieusement du même répertoire qu'avant, ce
+qui peut facilement passer inaperçu.</p>
+
+<p>Pour éviter ce piège, envoyer une commande qui n'est <em>que</em> ça
+(<code>cd</code>, <code>chdir</code>, <code>Set-Location</code>,
+<code>pushd</code>, <code>popd</code>, seuls ou suivis d'un chemin,
+sans rien enchaîné derrière) déclenche désormais une annonce vocale et
+une boîte de confirmation qui rappellent d'utiliser Ctrl+Maj+D à la
+place — le seul moyen de changer <em>durablement</em> de répertoire,
+puisqu'il agit directement sur le répertoire courant mémorisé par
+LazyShell plutôt que de passer par un processus qui va disparaître.
+Cette confirmation n'empêche pas d'envoyer la commande quand même
+(répondre Oui) : ça reste utile ponctuellement, par exemple pour voir
+l'erreur renvoyée par un chemin qui n'existe pas.</p>
+
+<p>Un <code>cd</code> qui fait partie d'une commande plus longue,
+enchaînée sur la même ligne (par exemple <code>cd un_dossier; git
+status</code>), n'est en revanche pas concerné par cet avertissement :
+le changement de répertoire profite bien à la suite de cette même
+commande, dans ce même processus, avant qu'il ne se termine.</p>
+
 <h2 id="navigation">Mode navigation (SFTP)</h2>
 
 <p>Une session SSH peut basculer (Ctrl+Maj+F) entre le terminal habituel

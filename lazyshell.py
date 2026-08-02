@@ -44,7 +44,7 @@ from ssh import (
 )
 
 APP_NOM = "LazyShell"
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 
 # Dépôt GitHub public du projet, pour la vérification des mises à jour.
 URL_DERNIERE_RELEASE = "https://api.github.com/repos/sofquipeut/lazyshell/releases/latest"
@@ -497,6 +497,32 @@ def libelle_signal(code_retour: int) -> str | None:
         return None
     nom = NOMS_SIGNAUX.get(numero)
     return f"signal {numero}, {nom}" if nom else f"signal {numero}"
+
+
+# Chaque commande envoyée démarre un processus shell tout neuf
+# (subprocess.Popen par commande, voir execution.py) : rien de ce qui
+# tient dans le processus lui-même — dont le répertoire courant posé par
+# cd/Set-Location — ne survit à sa fin. Une commande de changement de
+# répertoire tapée seule ne fait donc rien de durable, sans le moindre
+# message d'erreur pour le signaler : le prochain envoi repart
+# silencieusement du même répertoire qu'avant. Motif volontairement
+# limité à la commande PRISE SEULE (voir _commande_cd_isolee ci-dessous) :
+# un enchaînement du style "cd Documents; git status" reste, lui,
+# parfaitement valide, le changement vaut pour la suite de cette même
+# commande.
+MOTIF_COMMANDE_CD = re.compile(
+    r"^(cd|chdir|set-location|sl|pushd|popd)(\s+.+)?$", re.IGNORECASE,
+)
+
+
+def _commande_cd_isolee(commande: str) -> bool:
+    """Vrai si la commande n'est, à elle seule, qu'un changement de
+    répertoire — sans rien derrière qui en tirerait parti dans le même
+    processus."""
+    ligne = commande.strip()
+    if "\n" in ligne or re.search(r"[;&|]", ligne):
+        return False
+    return bool(MOTIF_COMMANDE_CD.match(ligne))
 
 
 @dataclass
@@ -960,11 +986,40 @@ class PanneauSession(wx.Panel):
         commande = self.saisie.GetValue().strip()
         if not commande:
             return
+        if _commande_cd_isolee(commande) and not self._confirmer_commande_cd():
+            return
         self.saisie.SetValue("")
         self.historique.append(commande)
         self.index_historique = len(self.historique)
         self._brouillons.clear()
         self.executer(commande)
+
+    def _confirmer_commande_cd(self) -> bool:
+        """Avertit avant d'envoyer un cd/Set-Location tapé seul : chaque
+        commande démarre son propre processus (voir execution.py), rien
+        de ce qu'il pose comme répertoire ne survit à sa fin — la
+        commande suivante repartirait silencieusement du même endroit
+        qu'avant, sans le moindre message d'erreur pour le signaler.
+        Ctrl+Maj+D est le seul moyen de changer durablement de
+        répertoire. Laisse quand même la main à l'utilisateur (Oui
+        l'envoie tel quel) : rien n'empêche un besoin ponctuel légitime,
+        par exemple juste regarder l'erreur renvoyée par un chemin
+        invalide.
+        """
+        self.voix.dire(
+            "Cette commande ne changera pas le répertoire des commandes "
+            "suivantes. Utilisez Ctrl+Maj+D.",
+            interrompre=True,
+        )
+        return wx.MessageBox(
+            "cd/Set-Location ne s'applique qu'à cette seule commande : le "
+            "répertoire ne sera pas conservé pour les commandes suivantes, "
+            "sans aucun message d'erreur pour le signaler.\n\n"
+            "Utilisez Ctrl+Maj+D pour changer durablement de répertoire.\n\n"
+            "Envoyer quand même ?",
+            "Changement de répertoire non conservé",
+            wx.YES_NO | wx.ICON_WARNING,
+        ) == wx.YES
 
     def _ligne_logique(self) -> tuple[int, int]:
         """Position du curseur en lignes reelles, et nombre de sauts.

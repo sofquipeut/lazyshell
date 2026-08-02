@@ -47,6 +47,11 @@ De plus, j'utilisais WinSCP en parallèle pour parcourir un serveur distant, afi
   avec annonce vocale de la nouvelle position) ; touche Suppr pour
   supprimer directement dans ces listes et dans la gestion des profils
   SSH (détail dans la [documentation](docs/index.html#commandes)).
+- Avertissement si `cd`/`Set-Location` est envoyé seul comme commande :
+  chaque commande démarre son propre processus, un tel changement de
+  répertoire ne serait donc pas conservé pour la suite sans que rien ne
+  le signale ; Ctrl+Maj+D reste le moyen de changer durablement de
+  répertoire (détail dans la [documentation](docs/index.html#fonctionnement)).
 
 ## Installation
 

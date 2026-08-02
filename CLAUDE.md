@@ -1244,6 +1244,55 @@ L'environnement Python est dans `venv`. Utiliser
   « masqué » pour l'horodatage, et la nouvelle complétion de chemin en
   local (Ctrl+Espace).
 
+- **Avertissement avant l'envoi d'un `cd`/`Set-Location` tapé seul.**
+  Question posée par l'utilisateur après la sortie de la 1.6.0, à propos
+  d'un ancien sujet resté en suspens (commandes façon `cd` pour changer
+  de répertoire directement dans le terminal) : pourquoi le modèle
+  « une commande à la fois » de ce projet l'empêche, concrètement ?
+  Réponse vérifiée dans `execution.py` : chaque commande envoyée démarre
+  un `subprocess.Popen` tout neuf (`-NonInteractive`, `cwd=` fourni
+  explicitement) — jamais de shell qui reste ouvert d'une commande à
+  l'autre. Un `cd` tapé comme une commande normale change donc bien de
+  répertoire, mais seulement à l'intérieur de ce processus éphémère, qui
+  se termine aussitôt sans rien laisser derrière lui : code de retour 0,
+  aucune erreur affichée, et la commande suivante repart silencieusement
+  du même répertoire qu'avant. Pire qu'une erreur franche : une perte de
+  contexte totalement silencieuse, pas de quoi remarquer que quelque
+  chose a raté sans réafficher l'invite à l'écran. C'est exactement pour
+  ça que Ctrl+Maj+D existe à part (`Fenetre.changer_repertoire`) : il ne
+  passe jamais par un `subprocess`, il modifie directement
+  `PanneauSession.repertoire` côté Python, qui est ensuite réinjecté en
+  `cwd=` à chaque commande suivante — le seul mécanisme qui « tient »
+  d'un bloc à l'autre dans cette architecture.
+
+  Vérifié au passage : rien n'avertissait de ça avant ce correctif, ni
+  en local ni en SSH (`get_pty=False`, même modèle par commande côté
+  distant). Nouvelle fonction `_commande_cd_isolee` (module-level,
+  juste après `libelle_signal`) : détecte, par une regex simple
+  (`cd`, `chdir`, `set-location`, `sl`, `pushd`, `popd`, insensible à la
+  casse), une commande qui n'est QUE ça — rien d'enchaîné derrière avec
+  `;`/`&`/`|` ou un saut de ligne. Ce dernier point est volontaire : un
+  one-liner du style `cd Documents; git status` reste parfaitement
+  valide et n'est pas signalé, le changement de répertoire profite
+  bel et bien à la suite de cette même commande, dans ce même
+  processus — seule une commande de changement de répertoire vraiment
+  seule, sans suite, est un piège. `PanneauSession._confirmer_commande_cd`,
+  appelée depuis `envoyer()` avant tout le reste (avant même de vider la
+  saisie ou de toucher à l'historique, pour que refuser laisse tout
+  intact), annonce le problème vocalement puis pose une confirmation
+  Oui/Non (même modèle que `_proposer_reconnexion`) qui rappelle
+  Ctrl+Maj+D — sans jamais bloquer complètement l'envoi : rien
+  n'empêche un besoin ponctuel légitime, par exemple juste vouloir voir
+  l'erreur renvoyée par un chemin invalide. Vérifié par un script jetable
+  (une douzaine de cas : `cd`, `cd Documents`, `Set-Location -Path ...`,
+  `sl ..`, `pushd`/`popd`, un one-liner avec `;`, une commande multiligne,
+  et de simples faux positifs à éviter comme `cdignore`) — tous corrects.
+  Reste à vérifier au clavier avec NVDA : l'annonce et la boîte de
+  confirmation à l'envoi d'un `cd` isolé, en local comme en SSH, et
+  qu'un one-liner `cd X; commande` part bien sans aucun avertissement.
+
+- **Version 1.7.0.** L'avertissement `cd`/`Set-Location` ci-dessus.
+
 ## Idées à reprendre plus tard
 
 Notées en passant, pas encore faites — pas de quoi se précipiter dessus
