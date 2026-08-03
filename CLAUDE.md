@@ -1276,20 +1276,38 @@ L'environnement Python est dans `venv`. Utiliser
   valide et n'est pas signalé, le changement de répertoire profite
   bel et bien à la suite de cette même commande, dans ce même
   processus — seule une commande de changement de répertoire vraiment
-  seule, sans suite, est un piège. `PanneauSession._confirmer_commande_cd`,
-  appelée depuis `envoyer()` avant tout le reste (avant même de vider la
-  saisie ou de toucher à l'historique, pour que refuser laisse tout
-  intact), annonce le problème vocalement puis pose une confirmation
-  Oui/Non (même modèle que `_proposer_reconnexion`) qui rappelle
-  Ctrl+Maj+D — sans jamais bloquer complètement l'envoi : rien
-  n'empêche un besoin ponctuel légitime, par exemple juste vouloir voir
-  l'erreur renvoyée par un chemin invalide. Vérifié par un script jetable
-  (une douzaine de cas : `cd`, `cd Documents`, `Set-Location -Path ...`,
-  `sl ..`, `pushd`/`popd`, un one-liner avec `;`, une commande multiligne,
-  et de simples faux positifs à éviter comme `cdignore`) — tous corrects.
-  Reste à vérifier au clavier avec NVDA : l'annonce et la boîte de
-  confirmation à l'envoi d'un `cd` isolé, en local comme en SSH, et
-  qu'un one-liner `cd X; commande` part bien sans aucun avertissement.
+  seule, sans suite, est un piège. Détectée depuis `envoyer()`, avant
+  tout le reste (avant même de vider la saisie ou de toucher à
+  l'historique, pour que le blocage laisse tout intact et modifiable).
+
+  Première version avec une confirmation Oui/Non façon
+  `_proposer_reconnexion` (« envoyer quand même ? ») — retirée presque
+  aussitôt, sur une objection de l'utilisateur pendant la relecture :
+  il n'existe pratiquement aucun cas où « envoyer quand même » est le
+  bon choix. Soit l'intention est vraiment de changer de répertoire, et
+  la réponse est toujours d'utiliser Ctrl+Maj+D à la place ; soit c'est
+  un besoin ponctuel du genre « juste vérifier qu'un chemin existe »,
+  et `Test-Path` le couvre déjà proprement, sans le piège de silence.
+  Proposer un choix qui n'en est pas vraiment un n'ajoutait que de la
+  friction. Simplifié en un blocage pur et simple, sans boîte modale :
+  annonce vocale + braille (« cd/Set-Location seul n'est pas conservé
+  pour la suite. Utilisez Ctrl+Maj+D. Commande non envoyée. »), la
+  commande n'est pas envoyée, la saisie reste telle quelle. Exactement
+  le même modèle que le blocage déjà existant sur `en_cours` juste en
+  dessous dans `executer()` (« Une commande est déjà en cours... ») —
+  ce garde-fou s'aligne dessus plutôt que de réutiliser le modèle
+  Oui/Non des confirmations destructives (suppression, hôte SSH
+  changé), qui ne s'applique pas ici : rien à confirmer, juste à
+  rediriger vers le bon outil.
+
+  Vérifié par un script jetable (une douzaine de cas : `cd`,
+  `cd Documents`, `Set-Location -Path ...`, `sl ..`, `pushd`/`popd`, un
+  one-liner avec `;`, une commande multiligne, et de simples faux
+  positifs à éviter comme `cdignore`) — tous corrects. Reste à
+  vérifier au clavier avec NVDA : l'annonce (parole et braille) au
+  moment d'envoyer un `cd` isolé, en local comme en SSH, que la
+  commande n'est bien pas envoyée (aucun nouveau bloc), et qu'un
+  one-liner `cd X; commande` part bien sans aucun avertissement.
 
 - **Version 1.7.0.** L'avertissement `cd`/`Set-Location` ci-dessus.
 

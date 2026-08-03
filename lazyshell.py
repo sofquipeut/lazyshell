@@ -986,40 +986,32 @@ class PanneauSession(wx.Panel):
         commande = self.saisie.GetValue().strip()
         if not commande:
             return
-        if _commande_cd_isolee(commande) and not self._confirmer_commande_cd():
+        if _commande_cd_isolee(commande):
+            # Bloque l'envoi plutôt que de proposer un choix : chaque
+            # commande démarre son propre processus (voir execution.py),
+            # rien de ce qu'un cd/Set-Location pose comme répertoire ne
+            # survit à sa fin — la commande suivante repartirait
+            # silencieusement du même endroit qu'avant, sans le moindre
+            # message d'erreur pour le signaler. Pas de « envoyer quand
+            # même » proposé (contrairement à une confirmation Oui/Non
+            # classique) : il n'y a pas de cas où l'envoyer tel quel est
+            # le bon choix, seulement Ctrl+Maj+D à la place. Même modèle
+            # que le blocage sur `en_cours` juste en dessous — bloquer et
+            # annoncer, sans boîte modale. La saisie n'est pas vidée : le
+            # texte reste modifiable (par exemple pour en faire un
+            # one-liner "cd X; commande").
+            self.voix.dire(
+                "cd/Set-Location seul n'est pas conservé pour la suite. "
+                "Utilisez Ctrl+Maj+D. Commande non envoyée.",
+                braille="cd non conservé, utilisez Ctrl+Maj+D",
+                interrompre=True,
+            )
             return
         self.saisie.SetValue("")
         self.historique.append(commande)
         self.index_historique = len(self.historique)
         self._brouillons.clear()
         self.executer(commande)
-
-    def _confirmer_commande_cd(self) -> bool:
-        """Avertit avant d'envoyer un cd/Set-Location tapé seul : chaque
-        commande démarre son propre processus (voir execution.py), rien
-        de ce qu'il pose comme répertoire ne survit à sa fin — la
-        commande suivante repartirait silencieusement du même endroit
-        qu'avant, sans le moindre message d'erreur pour le signaler.
-        Ctrl+Maj+D est le seul moyen de changer durablement de
-        répertoire. Laisse quand même la main à l'utilisateur (Oui
-        l'envoie tel quel) : rien n'empêche un besoin ponctuel légitime,
-        par exemple juste regarder l'erreur renvoyée par un chemin
-        invalide.
-        """
-        self.voix.dire(
-            "Cette commande ne changera pas le répertoire des commandes "
-            "suivantes. Utilisez Ctrl+Maj+D.",
-            interrompre=True,
-        )
-        return wx.MessageBox(
-            "cd/Set-Location ne s'applique qu'à cette seule commande : le "
-            "répertoire ne sera pas conservé pour les commandes suivantes, "
-            "sans aucun message d'erreur pour le signaler.\n\n"
-            "Utilisez Ctrl+Maj+D pour changer durablement de répertoire.\n\n"
-            "Envoyer quand même ?",
-            "Changement de répertoire non conservé",
-            wx.YES_NO | wx.ICON_WARNING,
-        ) == wx.YES
 
     def _ligne_logique(self) -> tuple[int, int]:
         """Position du curseur en lignes reelles, et nombre de sauts.
