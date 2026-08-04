@@ -233,6 +233,7 @@ class ExecuteurLocal:
             self._processus = processus
 
         lignes: list[str] = []
+        depuis_erreur: list[bool] = []
         tronquee = False
         fil = queue.Queue()
 
@@ -346,7 +347,8 @@ class ExecuteurLocal:
 
             texte, est_erreur = element
             if len(lignes) < MAX_LIGNES:
-                lignes.append(f"[erreur] {texte}" if est_erreur else texte)
+                lignes.append(texte)
+                depuis_erreur.append(est_erreur)
                 if sur_ligne is not None:
                     sur_ligne(texte, est_erreur)
             elif not tronquee:
@@ -354,6 +356,7 @@ class ExecuteurLocal:
                 lignes.append(
                     f"[Sortie tronquée : plus de {MAX_LIGNES} lignes.]"
                 )
+                depuis_erreur.append(False)
 
         try:
             code = processus.wait(timeout=DELAI_ABANDON_LECTURE)
@@ -373,8 +376,22 @@ class ExecuteurLocal:
         duree = time.monotonic() - debut
         logging.info("Terminé, code %s, %.1f s, %d lignes", code, duree, len(lignes))
 
+        # Le marqueur [erreur] ne sert qu'à repérer, en cas d'échec réel,
+        # les lignes les plus susceptibles d'expliquer pourquoi — pas à
+        # signaler qu'une ligne vient de stderr en soi. Beaucoup d'outils
+        # (docker compose, git, npm...) écrivent leur progression normale
+        # sur stderr même quand tout se passe bien ; le préfixer par
+        # « erreur » dans ce cas est trompeur, d'où l'attente du code de
+        # retour (connu seulement une fois processus.wait() passé, donc
+        # après coup plutôt qu'au fil de l'eau) avant de décider.
+        echec = code != 0
+        sortie = "\n".join(
+            f"[erreur] {texte}" if echec and erreur else texte
+            for texte, erreur in zip(lignes, depuis_erreur)
+        )
+
         return Resultat(
-            sortie="\n".join(lignes),
+            sortie=sortie,
             code_retour=code,
             duree=duree,
             tronquee=tronquee,

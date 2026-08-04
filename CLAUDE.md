@@ -1309,7 +1309,49 @@ L'environnement Python est dans `venv`. Utiliser
   commande n'est bien pas envoyée (aucun nouveau bloc), et qu'un
   one-liner `cd X; commande` part bien sans aucun avertissement.
 
-- **Version 1.7.0.** L'avertissement `cd`/`Set-Location` ci-dessus.
+- **Bug réel remonté en usage : `[erreur]` annoncé sur une sortie stderr
+  alors que la commande avait réussi.** Signalé avec un exemple concret,
+  en SSH : `sudo docker compose up -d hindsight` annonçait quatre lignes
+  (« Recreate », « Recreated », « Starting », « Started ») toutes
+  préfixées `[erreur]`, alors que le conteneur avait démarré sans
+  problème. Cause : `docker compose` écrit sa progression sur stderr même
+  en cas de succès complet — comportement connu de cet outil (et de
+  beaucoup d'autres : git, npm...), stderr n'étant qu'un second flux de
+  sortie, pas un signal d'échec en soi. `execution.py` et `ssh.py`
+  préfixaient pourtant `[erreur]` sur CHAQUE ligne dès qu'elle venait de
+  stderr, sans jamais regarder le code de retour final — la même
+  confusion de fond que celle déjà corrigée pour les signaux (143 lu
+  comme une erreur plutôt qu'un arrêt demandé, voir plus haut), mais
+  cette fois sur la provenance d'une ligne plutôt que sur le code de
+  retour lui-même.
+
+  Corrigé en reportant la décision du préfixe à la toute fin, une fois
+  le code de retour connu : `lignes` et un nouveau `depuis_erreur`
+  (liste parallèle de booléens) collectent le texte brut et la
+  provenance de chaque ligne pendant la lecture des flux, sans aucun
+  préfixe à ce stade — `code` n'est disponible qu'après
+  `processus.wait()` (local) ou `canal.recv_exit_status()` (SSH), donc
+  après coup, jamais au fil de l'eau. Le texte final du bloc
+  (`"\n".join(...)`) n'ajoute `[erreur] ` aux lignes issues de stderr
+  que si `code != 0` — sur un succès, stderr et stdout sont maintenant
+  rendus à l'identique, sans distinction. Corrigé dans les deux fichiers
+  séparément (même duplication déjà en place pour `nettoyer_ansi`,
+  `MAX_LIGNES`, `reecrire_listing`... entre ces deux exécuteurs) :
+  `execution.py` pour le local, `ssh.py` pour le distant.
+
+  Vérifié par un script jetable, contre un vrai `ExecuteurLocal` (pas de
+  simulation de la lecture des flux) : une commande qui écrit sur stderr
+  puis réussit (`exit 0`) ne produit plus aucun `[erreur]` dans la
+  sortie ; la même commande qui échoue (`exit 1`) le produit toujours
+  correctement ; une sortie mixte stdout/stderr réussie ne préfixe rien
+  non plus. Reste à vérifier en conditions réelles : le cas d'origine
+  (`docker compose up -d`) sur le vrai serveur, en local avec une
+  commande PowerShell qui écrit sur stderr (`Write-Error`,
+  `[Console]::Error.WriteLine`) sans échouer, et qu'un échec réel garde
+  bien `[erreur]` sur les bonnes lignes.
+
+- **Version 1.7.0.** L'avertissement `cd`/`Set-Location`, et le
+  correctif `[erreur]`/stderr ci-dessus.
 
 ## Idées à reprendre plus tard
 

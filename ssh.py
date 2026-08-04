@@ -797,6 +797,7 @@ class ExecuteurSSH:
             self._canal = canal
 
         lignes: list[str] = []
+        depuis_erreur: list[bool] = []
         tronquee = False
         fil: queue.Queue = queue.Queue()
 
@@ -895,12 +896,14 @@ class ExecuteurSSH:
 
             texte, est_erreur = element
             if len(lignes) < MAX_LIGNES:
-                lignes.append(f"[erreur] {texte}" if est_erreur else texte)
+                lignes.append(texte)
+                depuis_erreur.append(est_erreur)
                 if sur_ligne is not None:
                     sur_ligne(texte, est_erreur)
             elif not tronquee:
                 tronquee = True
                 lignes.append(f"[Sortie tronquée : plus de {MAX_LIGNES} lignes.]")
+                depuis_erreur.append(False)
 
         interrompue = getattr(canal, "_interrompue", False)
         code = canal.recv_exit_status() if not interrompue else -1
@@ -913,8 +916,18 @@ class ExecuteurSSH:
             "SSH terminé, code %s, %.1f s, %d lignes", code, duree, len(lignes)
         )
 
+        # Même principe que dans execution.py : le préfixe [erreur] n'a de
+        # sens que si la commande a réellement échoué — beaucoup de
+        # commandes distantes (docker compose en tête) écrivent leur
+        # progression normale sur stderr même en cas de succès complet.
+        echec = code != 0
+        sortie = "\n".join(
+            f"[erreur] {texte}" if echec and erreur else texte
+            for texte, erreur in zip(lignes, depuis_erreur)
+        )
+
         return Resultat(
-            sortie="\n".join(lignes),
+            sortie=sortie,
             code_retour=code,
             duree=duree,
             tronquee=tronquee,
