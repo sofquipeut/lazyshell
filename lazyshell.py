@@ -20,6 +20,7 @@ import json
 import logging
 import queue
 import re
+import shlex
 import sys
 import threading
 import time
@@ -70,13 +71,28 @@ NOMS_VERBOSITE = {
 SEUIL_LECTURE_INTEGRALE = 10   # en dessous, on lit tout quoi qu'il arrive
 LIGNES_APERCU = 5              # niveau 1
 LIGNES_ERREUR = 15             # sur code de retour non nul
+
+# Session interactive : délai de regroupement des paquets reçus en une
+# seule annonce, en millisecondes (voir PanneauSession._planifier_annonce).
+DELAI_ANNONCE_INTERACTIVE = 300
+# Session interactive : un second Ctrl+Maj+K dans ce délai (en secondes)
+# après le Ctrl+C envoyé par le premier ferme la session.
+DELAI_SECONDE_INTERRUPTION = 3.0
 SEUIL_DUREE_ANNONCEE = 3.0     # en deçà, la durée n'est pas mentionnée
 LONGUEUR_COMMANDE_ENTETE = 60  # au-delà, la commande est tronquée
                                # dans l'en-tête et rappelée en entier
 
 # Une invite reconnue comme mot de passe masque la saisie : elle n'a pas
 # besoin d'être vue, et le braille ne devrait pas l'afficher en clair.
-MOTIF_MOT_DE_PASSE = re.compile(r"password|mot de passe|passphrase", re.IGNORECASE)
+MOTIF_MOT_DE_PASSE = re.compile(
+    r"password|mot de passe|passphrase|passcode|\[sudo\]|phrase secrète",
+    re.IGNORECASE,
+)
+
+# Remplace un secret envoyé en session interactive s'il réapparaît dans la
+# sortie (un programme qui n'aurait pas coupé l'écho) : ni affiché, ni lu,
+# ni copié dans le bloc.
+MASQUE_SECRET = "(masqué)"
 
 # Taille de police : bornes larges, pensées pour un usage malvoyant, pas
 # seulement pour un confort de lecture ordinaire.
@@ -525,6 +541,162 @@ def _commande_cd_isolee(commande: str) -> bool:
     return bool(MOTIF_COMMANDE_CD.match(ligne))
 
 
+# Interpréteurs qui ne deviennent interactifs que tapés seuls : avec un
+# argument (un script, -c...), ils exécutent puis rendent la main.
+INTERPRETEURS_SEULS = {
+    "python", "python3", "node", "sh", "bash", "zsh", "irb", "redis-cli",
+}
+# Clients de base de données : interactifs même avec des options de
+# connexion, sauf si une requête ou un fichier leur est donné.
+CLIENTS_BASE = {"mysql", "mariadb", "psql", "mongosh"}
+OPTIONS_NON_INTERACTIVES = {
+    "-e", "-c", "-f", "--execute", "--command", "--file", "--eval",
+}
+# Options de ssh suivies d'une valeur, pour retrouver l'hôte parmi les
+# arguments et savoir si une commande distante le suit.
+OPTIONS_SSH_AVEC_VALEUR = {
+    "-p", "-i", "-l", "-o", "-J", "-F", "-L", "-R", "-D", "-b", "-c", "-E",
+    "-m", "-O", "-Q", "-S", "-W", "-w",
+}
+
+
+def _commande_interactive_connue(commande: str) -> bool:
+    """Vrai pour une commande dont on sait d'avance qu'elle attend un
+    terminal et un échange (Entrée seule la lance alors en session
+    interactive, comme Ctrl+Entrée). Liste volontairement limitée aux
+    cas sans ambiguïté : le rattrapage après coup (MOTIF_TERMINAL_REQUIS)
+    couvre le reste. Un enchaînement (tube, point-virgule, plusieurs
+    lignes) n'est jamais détecté : l'utilisateur compose alors quelque
+    chose de précis."""
+    ligne = commande.strip()
+    if "\n" in ligne or re.search(r"[;&|<>]", ligne):
+        return False
+    try:
+        mots = shlex.split(ligne)
+    except ValueError:
+        return False
+    if mots and mots[0] == "sudo":
+        mots = mots[1:]
+    if not mots:
+        return False
+    programme, arguments = mots[0].rsplit("/", 1)[-1], mots[1:]
+
+    if programme in INTERPRETEURS_SEULS:
+        return not arguments or arguments == ["-i"]
+    if programme in CLIENTS_BASE:
+        return not any(
+            a.split("=", 1)[0] in OPTIONS_NON_INTERACTIVES for a in arguments
+        )
+    if programme == "sqlite3":
+        # sqlite3 base.db : interactif ; sqlite3 base.db "requête" : non.
+        return len([a for a in arguments if not a.startswith("-")]) <= 1
+    if programme == "su":
+        return "-c" not in arguments and "--command" not in arguments
+    if programme in ("docker", "podman", "kubectl"):
+        # docker compose exec alloue un terminal de lui-même (sauf -T).
+        if arguments[:2] == ["compose", "exec"]:
+            return "-T" not in arguments
+        if not arguments or arguments[0] not in ("exec", "run"):
+            return False
+        options = [a for a in arguments if a.startswith("-")]
+        if any(o in ("-it", "-ti") for o in options):
+            return True
+        courtes = "".join(o[1:] for o in options if not o.startswith("--"))
+        longues = set(options)
+        interactive = "i" in courtes or "--interactive" in longues
+        terminal = "t" in courtes or "--tty" in longues
+        return interactive and terminal
+    if programme == "ssh":
+        # ssh hôte : session ; ssh hôte commande : exécution simple.
+        positionnels = []
+        i = 0
+        while i < len(arguments):
+            a = arguments[i]
+            if a in OPTIONS_SSH_AVEC_VALEUR:
+                i += 2
+                continue
+            if not a.startswith("-"):
+                positionnels.append(a)
+            i += 1
+        return len(positionnels) == 1
+    return False
+
+
+# Programmes plein écran, refusés avant même d'être lancés : ils dessinent
+# un écran entier, illisible ligne par ligne, et attendent des touches
+# (flèches, Échap...) que la saisie ligne par ligne ne sait pas envoyer.
+# Le mode interactif les repère aussi en cours de route (écran alternatif,
+# voir terminal_ligne.py) ; cette liste évite simplement de les lancer.
+PROGRAMMES_PLEIN_ECRAN = {
+    "vi", "vim", "nvim", "view", "vimdiff", "nano", "pico", "emacs", "joe",
+    "mcedit", "mc", "htop", "btop", "top", "atop", "iotop", "nmtui",
+    "tmux", "screen", "watch", "ranger", "ncdu", "alsamixer",
+}
+# Pagers : sans terminal (mode normal) ils se contentent d'afficher tout
+# le texte, comme cat. Refusés seulement en session interactive.
+PAGERS = {"less", "more", "most"}
+
+MESSAGE_PLEIN_ECRAN = (
+    "Programme plein écran non pris en charge. Pour modifier un fichier "
+    "distant, utilisez le mode navigation, Ctrl+Maj+F, puis Entrée sur le "
+    "fichier."
+)
+
+
+def _programme_plein_ecran(commande: str, interactif: bool) -> str | None:
+    """Nom du programme plein écran que lance cette commande, ou None."""
+    ligne = commande.strip()
+    if "\n" in ligne or re.search(r"[;&|]", ligne):
+        return None
+    try:
+        mots = shlex.split(ligne)
+    except ValueError:
+        return None
+    if mots and mots[0] == "sudo":
+        mots = mots[1:]
+    if not mots:
+        return None
+    programme, arguments = mots[0].rsplit("/", 1)[-1], mots[1:]
+    # top -b : mode « batch », une simple sortie texte.
+    if programme == "top" and "-b" in arguments:
+        return None
+    if programme in PROGRAMMES_PLEIN_ECRAN or (interactif and programme in PAGERS):
+        return programme
+    return None
+
+
+# Messages d'un programme qui a refusé de démarrer faute de terminal, en
+# mode normal (sans pseudo-terminal) : _commande_terminee propose alors
+# de la relancer en session interactive. La commande a échoué sans rien
+# faire, la relancer est sans risque.
+MOTIF_TERMINAL_REQUIS = re.compile(
+    r"not a tty|is not a terminal|a terminal is required|"
+    r"must be run from a terminal|no tty present|requires a tty|"
+    r"inappropriate ioctl for device",
+    re.IGNORECASE,
+)
+
+# Deux espaces ou plus à la suite : séparation de colonnes (ls en
+# terminal range les noms en colonnes sur une même ligne).
+MOTIF_COLONNES = re.compile(r" {2,}")
+
+
+def _ponctuer_pour_la_voix(lignes: list[str]) -> str:
+    """Session interactive : relie les lignes par des points et les
+    colonnes par des virgules, pour que la synthèse marque des pauses
+    au lieu de tout enchaîner d'une traite. Pour la voix seulement :
+    l'affichage et le bloc copié gardent le texte d'origine."""
+    morceaux = []
+    for ligne in lignes:
+        ligne = MOTIF_COLONNES.sub(", ", _pour_la_voix(ligne).strip())
+        if not ligne:
+            continue
+        if ligne[-1] not in ".,;:!?":
+            ligne += "."
+        morceaux.append(ligne)
+    return " ".join(morceaux)
+
+
 @dataclass
 class Bloc:
     numero: int
@@ -537,6 +709,9 @@ class Bloc:
     fin: int = 0
     duree: float = 0.0
     interrompue: bool = False
+    # Session interactive (Ctrl+Entrée) : la sortie est la transcription
+    # complète de l'échange, déjà entendue au fil de l'eau.
+    interactif: bool = False
 
     @property
     def nb_lignes(self) -> int:
@@ -563,6 +738,8 @@ class Bloc:
         if len(commande) > LONGUEUR_COMMANDE_ENTETE:
             commande = commande[:LONGUEUR_COMMANDE_ENTETE].rstrip() + "..."
         morceaux.append(commande)
+        if self.interactif:
+            morceaux.append("interactif")
 
         # Un code de retour négatif après interruption n'a aucun sens
         # pour l'utilisateur : c'est le signal qui a tué le processus.
@@ -653,6 +830,14 @@ def composer_annonce(bloc: Bloc, verbosite: int) -> str:
 
     if bloc.interrompue:
         return f"Interrompue après {bloc.duree:.0f} secondes."
+
+    # Session interactive : tout a déjà été lu au fil de l'eau, relire la
+    # transcription entière à la fin ne ferait que la répéter.
+    if bloc.interactif:
+        if bloc.code_retour == 0:
+            return "Session interactive terminée."
+        signal = libelle_signal(bloc.code_retour)
+        return f"Session interactive terminée, {signal or f'code {bloc.code_retour}'}."
 
     if bloc.code_retour != 0:
         signal = libelle_signal(bloc.code_retour)
@@ -901,6 +1086,27 @@ class PanneauSession(wx.Panel):
         self._commande_en_cours = ""
         self._debut = 0.0
         self._invite_boite: wx.TextEntryDialog | None = None
+        # Session interactive en cours (Ctrl+Entrée, en local par ConPTY
+        # comme en SSH) : Entrée envoie alors la ligne au programme au lieu
+        # de lancer une nouvelle commande. Voir executer_interactif.
+        self.interactif = False
+        self._debut_zone_interactive = 0   # début de la zone provisoire
+        self._debut_fragment = 0           # début de la ligne incomplète affichée
+        self._echo_attendu: str | None = None
+        self._a_annoncer: list[str] = []
+        self._fragment_courant = ""
+        self._dernier_fragment_annonce = ""
+        self._premiere_attente = 0.0
+        self._minuterie_annonce: wx.CallLater | None = None
+        # Secrets envoyés pendant la session interactive en cours, gardés
+        # en mémoire seulement le temps de la session pour les masquer
+        # s'ils réapparaissent dans la sortie (voir _masquer_secrets).
+        self._secrets: list[str] = []
+        # Dernière invite de mot de passe pour laquelle la boîte masquée a
+        # déjà été ouverte : évite de la rouvrir à chaque paquet reçu.
+        self._invite_secret_traitee = ""
+        # Instant du dernier Ctrl+C envoyé par Ctrl+Maj+K (voir interrompre).
+        self._instant_ctrl_c = 0.0
         # Mode navigation (SSH seulement) : bascule saisie+sortie contre un
         # navigateur SFTP. self.repertoire sert de chemin courant aux deux
         # modes, pour que l'un reprenne où l'autre s'est arrêté.
@@ -982,7 +1188,10 @@ class PanneauSession(wx.Panel):
 
     # -- saisie ------------------------------------------------------------
 
-    def envoyer(self) -> None:
+    def envoyer(self, interactif: bool = False) -> None:
+        if self.interactif:
+            self.envoyer_ligne_interactive()
+            return
         commande = self.saisie.GetValue().strip()
         if not commande:
             return
@@ -1007,11 +1216,58 @@ class PanneauSession(wx.Panel):
                 interrompre=True,
             )
             return
+        # Entrée seule sur une commande connue pour attendre un terminal
+        # (python3 seul, docker exec -it...) : session interactive
+        # d'office, plutôt qu'un échec à rattraper ensuite.
+        automatique = not interactif and _commande_interactive_connue(commande)
+        programme = _programme_plein_ecran(commande, interactif or automatique)
         self.saisie.SetValue("")
         self.historique.append(commande)
         self.index_historique = len(self.historique)
         self._brouillons.clear()
-        self.executer(commande)
+        if programme is not None:
+            # Rien n'est envoyé, mais contrairement au cd ci-dessus il n'y
+            # a rien à retoucher : la saisie est vidée comme après un
+            # envoi, et Flèche haut retrouve la commande au besoin.
+            self.voix.dire(
+                f"{programme} : {MESSAGE_PLEIN_ECRAN} Commande non envoyée.",
+                braille=f"{programme} : plein écran non pris en charge",
+                interrompre=True,
+            )
+            return
+        if interactif or automatique:
+            self.executer_interactif(commande, automatique=automatique)
+        else:
+            self.executer(commande)
+
+    def envoyer_ligne_interactive(self) -> None:
+        """Entrée pendant une session interactive : la ligne part au
+        programme, même vide (une simple validation est une réponse
+        valable à beaucoup d'invites)."""
+        ligne = self.saisie.GetValue()
+        # vim tapé dans un shell interactif : refusé ici plutôt que de
+        # laisser la détection de l'écran alternatif fermer toute la
+        # session, shell compris.
+        programme = _programme_plein_ecran(ligne, interactif=True)
+        self.saisie.SetValue("")
+        if ligne.strip():
+            self.historique.append(ligne)
+            self.index_historique = len(self.historique)
+            self._brouillons.clear()
+        if programme is not None:
+            self.voix.dire(
+                f"{programme} : {MESSAGE_PLEIN_ECRAN} Ligne non envoyée.",
+                braille=f"{programme} : plein écran non pris en charge",
+                interrompre=True,
+            )
+            return
+        # Le terminal distant renvoie la ligne tapée (écho) : elle reste
+        # dans la transcription, mais n'est pas relue à voix haute.
+        self._echo_attendu = ligne.strip() or None
+        # \r et non \n : c'est ce qu'envoie la touche Entrée d'un vrai
+        # terminal, le pseudo-terminal distant le traduit lui-même.
+        if not self.executeur.envoyer_saisie(ligne.replace("\n", "\r") + "\r"):
+            self.voix.dire("Envoi impossible.", interrompre=True)
 
     def _ligne_logique(self) -> tuple[int, int]:
         """Position du curseur en lignes reelles, et nombre de sauts.
@@ -1074,7 +1330,8 @@ class PanneauSession(wx.Panel):
             if maj:
                 evt.Skip()          # Maj+Entrée : saut de ligne
                 return
-            self.envoyer()
+            # Ctrl+Entrée : même commande, lancée en session interactive.
+            self.envoyer(interactif=ctrl)
             return
 
         if ctrl and code == wx.WXK_SPACE:
@@ -1293,6 +1550,205 @@ class PanneauSession(wx.Panel):
 
         threading.Thread(target=travailler, daemon=True).start()
 
+    def executer_interactif(self, commande: str, automatique: bool = False) -> None:
+        """Lance la commande avec un pseudo-terminal (Ctrl+Entrée).
+
+        Contrairement à executer(), la sortie s'affiche et se lit au fil
+        de l'eau, et la saisie reste active : chaque Entrée envoie une
+        ligne au programme (envoyer_ligne_interactive). La sortie vit
+        d'abord dans une zone provisoire en fin de champ, remplacée à la
+        fin par un bloc ordinaire qui en contient la transcription.
+        """
+        if self.en_cours:
+            self.voix.dire(
+                "Une commande est déjà en cours. Ctrl+Maj+K pour l'interrompre.",
+                interrompre=True,
+            )
+            return
+
+        self.en_cours = True
+        self.interactif = True
+        self._commande_en_cours = commande
+        self._debut = time.monotonic()
+        self._echo_attendu = None
+        self._a_annoncer = []
+        self._fragment_courant = ""
+        self._dernier_fragment_annonce = ""
+        self._secrets = []
+        self._invite_secret_traitee = ""
+        self._instant_ctrl_c = 0.0
+        self.saisie.SetName(f"Saisie interactive, {self.nom}")
+        self.rafraichir_statut()
+
+        self._debut_zone_interactive = self.sortie.GetLastPosition()
+        self.sortie.AppendText(f"\nSession interactive : {commande}\n")
+        self._debut_fragment = self.sortie.GetLastPosition()
+        # « Lancée en » quand ce n'est pas l'utilisateur qui l'a demandé :
+        # sans ça, rien ne lui dirait pourquoi Entrée ne lance plus une
+        # nouvelle commande.
+        debut_annonce = (
+            "Lancée en session interactive." if automatique else "Session interactive."
+        )
+        self.voix.dire(
+            f"{debut_annonce} Entrée envoie la ligne, Ctrl+Maj+K interrompt.",
+            braille=debut_annonce,
+            interrompre=True,
+        )
+
+        def travailler():
+            resultat = self.executeur.executer_interactif(
+                commande,
+                repertoire=self.repertoire,
+                sur_sortie=lambda lignes, fragment: wx.CallAfter(
+                    self._sortie_interactive, lignes, fragment
+                ),
+            )
+            wx.CallAfter(self._commande_terminee, commande, resultat)
+
+        threading.Thread(target=travailler, daemon=True).start()
+
+    def _sortie_interactive(self, lignes: list[str], fragment: str) -> None:
+        """Retour dans le thread principal : affiche les nouvelles lignes
+        et prépare leur annonce. La ligne incomplète (invite) est
+        réécrite à chaque appel plutôt qu'ajoutée, pour ne jamais
+        apparaître deux fois."""
+        if not self or not self.interactif:
+            return
+        lignes = [self._masquer_secrets(l) for l in lignes]
+        fragment = self._masquer_secrets(fragment)
+        if lignes:
+            # Une nouvelle ligne terminée clôt l'invite précédente : une
+            # même invite qui revient ensuite (« Sorry, try again. » puis
+            # de nouveau « Password: ») rouvrira bien la boîte masquée.
+            self._invite_secret_traitee = ""
+        fin = self.sortie.GetLastPosition()
+        if fin > self._debut_fragment:
+            self.sortie.Remove(self._debut_fragment, fin)
+        for ligne in lignes:
+            self.sortie.AppendText(ligne + "\n")
+        self._debut_fragment = self.sortie.GetLastPosition()
+        if fragment:
+            self.sortie.AppendText(fragment)
+
+        for ligne in lignes:
+            if self._echo_attendu is not None:
+                echo = self._echo_attendu
+                self._echo_attendu = None
+                if ligne.rstrip().endswith(echo):
+                    continue
+            if ligne.strip():
+                self._a_annoncer.append(ligne)
+        self._fragment_courant = fragment
+        self._planifier_annonce()
+
+    def _planifier_annonce(self) -> None:
+        """Regroupe ce qui arrive en rafale en une seule annonce : sans
+        ça, une sortie reçue en plusieurs paquets serait lue par petits
+        morceaux hachés. L'attente repart à chaque paquet, mais jamais
+        plus d'une seconde au total, pour qu'un flux continu soit lu
+        quand même."""
+        maintenant = time.monotonic()
+        minuterie = self._minuterie_annonce
+        if minuterie is not None and minuterie.IsRunning():
+            if maintenant - self._premiere_attente < 1.0:
+                minuterie.Restart(DELAI_ANNONCE_INTERACTIVE)
+            return
+        self._premiere_attente = maintenant
+        self._minuterie_annonce = wx.CallLater(
+            DELAI_ANNONCE_INTERACTIVE, self._annoncer_interactif
+        )
+
+    def _prendre_lignes_a_annoncer(self) -> tuple[list[str], str]:
+        """Vide les lignes en attente d'annonce et les rend prêtes à lire :
+        les lignes gardées, et le texte ponctué correspondant."""
+        lignes = self._a_annoncer
+        self._a_annoncer = []
+        suite = ""
+        if len(lignes) > SEUIL_LECTURE_INTEGRALE:
+            suite = f"Et {len(lignes) - LIGNES_APERCU} lignes de plus."
+            lignes = lignes[:LIGNES_APERCU]
+        texte = " ".join(m for m in (_ponctuer_pour_la_voix(lignes), suite) if m)
+        return lignes, texte
+
+    def _annoncer_interactif(self) -> None:
+        if not self:
+            return
+        lignes, texte_lignes = self._prendre_lignes_a_annoncer()
+        morceaux = [texte_lignes]
+        # Une invite identique à la précédente (« >>> », « $ ») n'est pas
+        # répétée après une sortie : seule une invite nouvelle est lue,
+        # c'est elle qui dit ce que le programme attend. Sans aucune
+        # sortie, elle est relue quand même : c'est alors le seul signe
+        # que la ligne envoyée a bien été traitée.
+        fragment = self._fragment_courant
+        if (
+            fragment and MOTIF_MOT_DE_PASSE.search(fragment)
+            and fragment != self._invite_secret_traitee
+        ):
+            # Invite de mot de passe : la boîte masquée porte l'invite
+            # elle-même, NVDA la lit à l'ouverture. Rien à taper dans la
+            # saisie normale, où le texte serait visible et lu.
+            self._invite_secret_traitee = fragment
+            self._dernier_fragment_annonce = fragment
+            texte = " ".join(m for m in morceaux if m)
+            if texte:
+                self.voix.dire(texte)
+            wx.CallAfter(self.saisir_secret, fragment)
+            return
+        if fragment and (not lignes or fragment != self._dernier_fragment_annonce):
+            morceaux.append(fragment)
+            self._dernier_fragment_annonce = fragment
+        texte = " ".join(m for m in morceaux if m)
+        if not texte:
+            return
+        self.voix.dire(texte, braille=fragment or (lignes[-1] if lignes else texte))
+
+    def saisir_secret(self, invite: str | None = None) -> None:
+        """Boîte masquée pour envoyer un mot de passe pendant une session
+        interactive : ouverte d'elle-même sur une invite reconnue, ou à
+        la demande (Ctrl+Maj+P) quand la détection n'a rien vu. Le texte
+        n'est ni affiché, ni lu, ni mis dans l'historique ou le journal."""
+        if not self:
+            return
+        if not self.interactif:
+            self.voix.dire("Aucune session interactive en cours.", interrompre=True)
+            return
+        if self._invite_boite is not None:
+            return
+        boite = wx.TextEntryDialog(
+            self, invite or "Texte à envoyer sans écho :",
+            f"Saisie masquée — {self.nom}",
+            style=wx.OK | wx.CANCEL | wx.CENTRE | wx.TE_PASSWORD,
+        )
+        self._invite_boite = boite
+        code = boite.ShowModal()
+        secret = boite.GetValue() if code == wx.ID_OK else None
+        boite.Destroy()
+        self._invite_boite = None
+        # La session a pu se terminer (ou être interrompue) pendant que la
+        # boîte était ouverte : plus rien à qui envoyer.
+        if not self or not self.interactif:
+            return
+        self.saisie.SetFocus()
+        if secret is None:
+            self.voix.dire(
+                "Saisie annulée, rien n'a été envoyé. Ctrl+Maj+P pour recommencer.",
+                interrompre=True,
+            )
+            return
+        self._secrets.append(secret)
+        self._echo_attendu = None
+        if not self.executeur.envoyer_saisie(secret + "\r"):
+            self.voix.dire("Envoi impossible.", interrompre=True)
+
+    def _masquer_secrets(self, texte: str) -> str:
+        # En dessous de 3 caractères, un « secret » se retrouverait dans
+        # trop de mots ordinaires pour être masqué sans tout abîmer.
+        for secret in self._secrets:
+            if len(secret) >= 3:
+                texte = texte.replace(secret, MASQUE_SECRET)
+        return texte
+
     def definir_repertoire(self, repertoire: str) -> None:
         """Change le répertoire courant et rafraîchit le titre aussitôt,
         que ce soit depuis le dialogue Ctrl+Maj+D ou depuis le pwd
@@ -1317,7 +1773,12 @@ class PanneauSession(wx.Panel):
         fenetre = self.GetTopLevelParent()
         if fenetre.session() is not self:
             return
-        nom = f"{self.nom} (commande en cours)" if self.en_cours else self.nom
+        if self.interactif:
+            nom = f"{self.nom} (session interactive)"
+        elif self.en_cours:
+            nom = f"{self.nom} (commande en cours)"
+        else:
+            nom = self.nom
         segments = [nom]
         if self.repertoire:
             segments.append(self.repertoire)
@@ -1327,7 +1788,8 @@ class PanneauSession(wx.Panel):
             resume = self._commande_en_cours.splitlines()[0].strip()
             if len(resume) > 60:
                 resume = resume[:60].rstrip() + "..."
-            fenetre.SetStatusText(f"Commande en cours : {resume}")
+            etat = "Session interactive" if self.interactif else "Commande en cours"
+            fenetre.SetStatusText(f"{etat} : {resume}")
         else:
             fenetre.SetStatusText("Prêt")
 
@@ -1377,6 +1839,25 @@ class PanneauSession(wx.Panel):
 
     def _commande_terminee(self, commande: str, resultat: Resultat) -> None:
         """Retour dans le thread principal : on peut toucher à l'interface."""
+        if not self:
+            return
+        interactif = self.interactif
+        dernieres_lignes = ""
+        if interactif:
+            # La zone provisoire laisse la place au bloc définitif, qui
+            # reprend la même transcription.
+            self.interactif = False
+            if self._minuterie_annonce is not None:
+                self._minuterie_annonce.Stop()
+            # Dernière sortie pas encore lue (un programme qui écrit puis
+            # s'arrête aussitôt) : sans ça, l'annonce de fin l'effacerait.
+            _, dernieres_lignes = self._prendre_lignes_a_annoncer()
+            if self._invite_boite is not None:
+                self._invite_boite.EndModal(wx.ID_CANCEL)
+            self.sortie.Remove(self._debut_zone_interactive, self.sortie.GetLastPosition())
+            self.saisie.SetName(f"Commande, {self.nom}")
+            resultat.sortie = self._masquer_secrets(resultat.sortie)
+            self._secrets = []
         self.en_cours = False
         self.saisie.SetEditable(True)
         self.rafraichir_statut()
@@ -1389,7 +1870,20 @@ class PanneauSession(wx.Panel):
         # et l'annonce s'en servent au moment de la création du bloc.
         self._duree = resultat.duree
         self._interrompue = resultat.interrompue
-        bloc = self.ajouter_bloc(commande, sortie, resultat.code_retour)
+        if resultat.plein_ecran:
+            sortie = (sortie + "\n" if sortie else "") + f"[{MESSAGE_PLEIN_ECRAN}]"
+        bloc = self.ajouter_bloc(
+            commande, sortie, resultat.code_retour, interactif=interactif,
+        )
+        if resultat.plein_ecran:
+            # Ce qui précède le refus n'est que le début d'un dessin
+            # d'écran, sans intérêt à lire : seule l'explication compte.
+            self.voix.dire(MESSAGE_PLEIN_ECRAN, interrompre=True)
+        # Lue après le statut de fin, jamais avant (règle du statut en
+        # premier), et sans l'interrompre.
+        elif dernieres_lignes:
+            # braille vide : l'afficheur garde le statut de fin.
+            self.voix.dire(dernieres_lignes, braille="")
 
         # Un message braille est fugace : il s'efface au bout de quelques
         # secondes. En posant le curseur sur la ligne d'en-tête du bloc,
@@ -1412,6 +1906,30 @@ class PanneauSession(wx.Panel):
             and not self.executeur.connexion_active
         ):
             self._proposer_reconnexion()
+            return
+
+        if (
+            not interactif and not resultat.interrompue
+            and resultat.code_retour != 0
+            and MOTIF_TERMINAL_REQUIS.search(resultat.sortie)
+        ):
+            # Après coup : laisse d'abord passer l'annonce du bloc.
+            wx.CallAfter(self._proposer_relance_interactive, commande)
+
+    def _proposer_relance_interactive(self, commande: str) -> None:
+        """Rattrapage d'une commande qui a refusé de démarrer faute de
+        terminal (« stdin is not a terminal », « a terminal is
+        required »...) : couvre les programmes que
+        _commande_interactive_connue ne connaît pas."""
+        if not self or self.en_cours:
+            return
+        if wx.MessageBox(
+            "Cette commande a besoin d'un terminal interactif. "
+            "La relancer en session interactive ?",
+            f"Terminal requis — {self.nom}", wx.YES_NO | wx.ICON_QUESTION,
+        ) == wx.YES:
+            self.executer_interactif(commande)
+        self.saisie.SetFocus()
 
     def _proposer_reconnexion(self) -> None:
         if self.profil is None:
@@ -1427,6 +1945,24 @@ class PanneauSession(wx.Panel):
         if not self.en_cours:
             self.voix.dire("Aucune commande en cours.", interrompre=True)
             return
+        # Session interactive : un premier Ctrl+Maj+K envoie Ctrl+C au
+        # programme, comme dans un vrai terminal (arrête la commande en
+        # cours dans un shell ou un REPL sans quitter la session). Un
+        # second, peu après, ferme la session pour de bon : le recours
+        # quand le programme ignore Ctrl+C.
+        maintenant = time.monotonic()
+        if (
+            self.interactif
+            and maintenant - self._instant_ctrl_c > DELAI_SECONDE_INTERRUPTION
+        ):
+            self._instant_ctrl_c = maintenant
+            if self.executeur.envoyer_saisie("\x03"):
+                self.voix.dire(
+                    "Ctrl+C envoyé. Ctrl+Maj+K de nouveau pour fermer la session.",
+                    braille="Ctrl+C envoyé",
+                    interrompre=True,
+                )
+                return
         self.voix.dire("Interruption demandée.", interrompre=True)
         # Une invite en attente laisserait sinon l'utilisateur bloqué sur
         # une boîte de dialogue orpheline pendant que le processus est tué.
@@ -1437,7 +1973,9 @@ class PanneauSession(wx.Panel):
 
     # -- blocs -------------------------------------------------------------
 
-    def ajouter_bloc(self, commande: str, sortie: str, code_retour: int) -> Bloc:
+    def ajouter_bloc(
+        self, commande: str, sortie: str, code_retour: int, interactif: bool = False,
+    ) -> Bloc:
         bloc = Bloc(
             numero=len(self.blocs) + 1,
             commande=commande,
@@ -1446,6 +1984,7 @@ class PanneauSession(wx.Panel):
             session=self.nom,
             duree=getattr(self, "_duree", 0.0),
             interrompue=getattr(self, "_interrompue", False),
+            interactif=interactif,
         )
         self._duree, self._interrompue = 0.0, False
         bloc.debut = self.sortie.GetLastPosition()
@@ -3517,6 +4056,14 @@ class Fenetre(wx.Frame):
         self.Bind(wx.EVT_MENU,
                   lambda e: self.interrompre_commande(),
                   m_session.Append(wx.ID_ANY, "&Interrompre la commande  Ctrl+Maj+K"))
+        # Deux espaces et pas de tabulation devant le raccourci, comme
+        # pour Ctrl+Maj : la touche est gérée par sur_touche_saisie.
+        self.Bind(wx.EVT_MENU,
+                  lambda e: self.lancer_interactif(),
+                  m_session.Append(wx.ID_ANY, "&Lancer en session interactive  Ctrl+Entrée"))
+        self.Bind(wx.EVT_MENU,
+                  lambda e: self.saisir_secret(),
+                  m_session.Append(wx.ID_ANY, "Saisir un &mot de passe…  Ctrl+Maj+P"))
         self.Bind(wx.EVT_MENU,
                   lambda e: self.changer_repertoire(),
                   m_session.Append(wx.ID_ANY, "Changer de &répertoire  Ctrl+Maj+D"))
@@ -4059,6 +4606,18 @@ class Fenetre(wx.Frame):
         if panneau is not None:
             panneau.interrompre()
 
+    def lancer_interactif(self):
+        panneau = self.session()
+        if panneau is None or panneau.mode_navigation:
+            return
+        panneau.envoyer(interactif=True)
+        panneau.saisie.SetFocus()
+
+    def saisir_secret(self):
+        panneau = self.session()
+        if panneau is not None:
+            panneau.saisir_secret()
+
     def changer_repertoire(self):
         panneau = self.session()
         if panneau is None:
@@ -4414,6 +4973,10 @@ class Fenetre(wx.Frame):
 
         if ctrl and maj and code == ord("D"):
             self.changer_repertoire()
+            return
+
+        if ctrl and maj and code == ord("P"):
+            self.saisir_secret()
             return
 
         if ctrl and maj and code == ord("U"):

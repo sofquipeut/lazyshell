@@ -24,6 +24,15 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
+from terminal_ligne import NettoyeurTerminal
+
+# Taille du pseudo-terminal en mode interactif, en local comme en SSH.
+# Large pour qu'un programme qui replie lui-même ses lignes à la largeur
+# du terminal ne coupe pas une phrase en deux lignes que NVDA lirait
+# séparément.
+LARGEUR_PTY = 200
+HAUTEUR_PTY = 50
+
 # Empêche toute fenêtre de console d'apparaître. Non négociable : une
 # console qui surgit vole le focus au lecteur d'écran.
 CREATE_NO_WINDOW = 0x08000000
@@ -127,6 +136,9 @@ class Resultat:
     duree: float
     tronquee: bool = False
     interrompue: bool = False
+    # Session interactive arrêtée parce que le programme a demandé un
+    # affichage plein écran (vim, htop...), non pris en charge.
+    plein_ecran: bool = False
 
 
 class ExecuteurLocal:
@@ -138,6 +150,9 @@ class ExecuteurLocal:
 
     def __init__(self):
         self._processus: subprocess.Popen | None = None
+        # Pseudo-terminal de la session interactive en cours (pywinpty).
+        self._pty = None
+        self._pty_interrompu = False
         self._verrou = threading.Lock()
         self._shell = self._trouver_shell()
 
@@ -398,6 +413,159 @@ class ExecuteurLocal:
             interrompue=interrompue,
         )
 
+    # -- mode interactif ----------------------------------------------------
+
+    def executer_interactif(
+        self,
+        commande: str,
+        repertoire: str | None = None,
+        sur_sortie: Callable[[list[str], str], None] | None = None,
+    ) -> Resultat:
+        """Même contrat qu'ExecuteurSSH.executer_interactif, en local :
+        la commande tourne dans un pseudo-terminal Windows (ConPTY, via
+        pywinpty), sans fenêtre de console visible — vérifié depuis
+        pythonw, aucune fenêtre n'apparaît. Bloque : thread de travail.
+
+        PowerShell est lancé sans -NonInteractive, contrairement au mode
+        normal : Read-Host et les invites de confirmation doivent pouvoir
+        attendre une réponse.
+        """
+        debut = time.monotonic()
+        try:
+            from winpty import PTY, Backend
+        except ImportError:
+            logging.exception("pywinpty absent")
+            return Resultat(
+                sortie="Mode interactif local indisponible : le module pywinpty est absent.",
+                code_retour=-1,
+                duree=0.0,
+            )
+
+        arguments = [
+            a for a in self._arguments(commande) if a != "-NonInteractive"
+        ]
+        # REPL de Python 3.13 et plus : sa version évoluée redessine la
+        # ligne à chaque frappe ; la version simple écrit du texte linéaire.
+        environnement = dict(os.environ, PYTHON_BASIC_REPL="1")
+        bloc_env = "\0".join(f"{k}={v}" for k, v in environnement.items()) + "\0"
+        logging.info("Exécution interactive [%s] : %s", self.nom_shell, commande)
+        try:
+            pty = PTY(LARGEUR_PTY, HAUTEUR_PTY, backend=Backend.ConPTY)
+            # Sans le programme lui-même en tête : pywinpty l'ajoute déjà
+            # (appname). Le répéter lançait un PowerShell dans un autre, qui
+            # réinterprétait la commande et en vidait les variables.
+            pty.spawn(
+                self._shell, " " + subprocess.list2cmdline(arguments[1:]),
+                repertoire or None, bloc_env,
+            )
+        except Exception as erreur:
+            logging.exception("Lancement interactif impossible")
+            return Resultat(
+                sortie=f"Impossible de lancer la commande : {erreur}",
+                code_retour=-1,
+                duree=time.monotonic() - debut,
+            )
+
+        with self._verrou:
+            self._pty = pty
+            self._pty_interrompu = False
+
+        nettoyeur = NettoyeurTerminal()
+        lignes: list[str] = []
+        tronquee = False
+        plein_ecran = False
+        vides_apres_fin = 0
+
+        while True:
+            try:
+                texte = pty.read(blocking=False)
+            except Exception:
+                break
+            if not texte:
+                # Le processus terminé peut encore avoir de la sortie en
+                # route : deux lectures vides de suite avant de conclure.
+                # Après une interruption, isalive() n'est pas fiable (la
+                # console intermédiaire peut survivre un moment) : on
+                # cesse d'attendre de la même façon.
+                if not pty.isalive() or self._pty_interrompu:
+                    vides_apres_fin += 1
+                    if vides_apres_fin >= 2:
+                        break
+                time.sleep(0.03)
+                continue
+            vides_apres_fin = 0
+            nouvelles = nettoyeur.alimenter(texte)
+            for ligne in nouvelles:
+                if len(lignes) < MAX_LIGNES:
+                    lignes.append(ligne)
+                elif not tronquee:
+                    tronquee = True
+                    lignes.append(f"[Sortie tronquée : plus de {MAX_LIGNES} lignes.]")
+            if sur_sortie is not None:
+                sur_sortie(nouvelles, nettoyeur.fragment)
+            if nettoyeur.plein_ecran:
+                logging.info("Programme plein écran détecté, session fermée.")
+                plein_ecran = True
+                self._tuer_arborescence(pty.pid)
+                break
+
+        reste = nettoyeur.vider()
+        if reste:
+            lignes.append(reste)
+            if sur_sortie is not None:
+                sur_sortie([reste], "")
+
+        with self._verrou:
+            interrompue = self._pty_interrompu
+            self._pty = None
+        code = pty.get_exitstatus()
+        if interrompue or plein_ecran or code is None:
+            code = -1
+        del pty
+
+        duree = time.monotonic() - debut
+        logging.info(
+            "Interactif terminé, code %s, %.1f s, %d lignes", code, duree, len(lignes)
+        )
+        return Resultat(
+            sortie="\n".join(lignes),
+            code_retour=code,
+            duree=duree,
+            tronquee=tronquee,
+            interrompue=interrompue,
+            plein_ecran=plein_ecran,
+        )
+
+    def envoyer_saisie(self, texte: str) -> bool:
+        """Transmet du texte au programme lancé par executer_interactif.
+        Jamais journalisé : il peut s'agir d'un mot de passe. Ctrl+C
+        (\\x03) devient un vrai Ctrl+C pour le programme, ConPTY s'en
+        charge."""
+        with self._verrou:
+            pty = self._pty
+        if pty is None:
+            return False
+        try:
+            pty.write(texte)
+        except Exception:
+            logging.exception("Écriture dans le pseudo-terminal impossible")
+            return False
+        return True
+
+    @staticmethod
+    def _tuer_arborescence(pid: int | None) -> None:
+        if pid is None:
+            return
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                creationflags=CREATE_NO_WINDOW,
+                capture_output=True,
+                timeout=5,
+            )
+        except Exception:
+            logging.exception("taskkill a échoué")
+
     # -- interruption ------------------------------------------------------
 
     @property
@@ -412,6 +580,15 @@ class ExecuteurLocal:
         enfants qui lui survivraient. On passe par taskkill /T, qui
         remonte l'arborescence.
         """
+        with self._verrou:
+            pty = self._pty
+            if pty is not None:
+                self._pty_interrompu = True
+        if pty is not None:
+            logging.info("Interruption demandée de la session interactive %s", pty.pid)
+            self._tuer_arborescence(pty.pid)
+            return True
+
         with self._verrou:
             processus = self._processus
             if processus is None:

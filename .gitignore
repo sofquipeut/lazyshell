@@ -38,3 +38,6 @@ settings.json
 # Commandes enregistrees par l'utilisateur : personnelles a son usage,
 # peuvent reveler des noms de serveurs ou de projets internes.
 commands.json
+
+# Copies de sauvegarde faites avant chaque palier de modification.
+sauvegardes/
