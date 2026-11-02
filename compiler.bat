@@ -38,6 +38,7 @@ if exist "dist\LazyShell" (
   --windowed ^
   --clean ^
   --name "LazyShell" ^
+  --collect-all winpty ^
   lazyshell.py
 
 if errorlevel 1 goto echec

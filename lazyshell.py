@@ -1086,8 +1086,8 @@ class PanneauSession(wx.Panel):
         self._commande_en_cours = ""
         self._debut = 0.0
         self._invite_boite: wx.TextEntryDialog | None = None
-        # Session interactive en cours (Ctrl+Entrée, SSH seulement pour
-        # l'instant) : Entrée envoie alors la ligne au programme au lieu
+        # Session interactive en cours (Ctrl+Entrée, en local par ConPTY
+        # comme en SSH) : Entrée envoie alors la ligne au programme au lieu
         # de lancer une nouvelle commande. Voir executer_interactif.
         self.interactif = False
         self._debut_zone_interactive = 0   # début de la zone provisoire
@@ -1195,12 +1195,6 @@ class PanneauSession(wx.Panel):
         commande = self.saisie.GetValue().strip()
         if not commande:
             return
-        if interactif and not self.distant:
-            self.voix.dire(
-                "Mode interactif disponible en session SSH seulement.",
-                interrompre=True,
-            )
-            return
         if _commande_cd_isolee(commande):
             # Bloque l'envoi plutôt que de proposer un choix : chaque
             # commande démarre son propre processus (voir execution.py),
@@ -1225,23 +1219,22 @@ class PanneauSession(wx.Panel):
         # Entrée seule sur une commande connue pour attendre un terminal
         # (python3 seul, docker exec -it...) : session interactive
         # d'office, plutôt qu'un échec à rattraper ensuite.
-        automatique = (
-            not interactif and self.distant and _commande_interactive_connue(commande)
-        )
+        automatique = not interactif and _commande_interactive_connue(commande)
         programme = _programme_plein_ecran(commande, interactif or automatique)
+        self.saisie.SetValue("")
+        self.historique.append(commande)
+        self.index_historique = len(self.historique)
+        self._brouillons.clear()
         if programme is not None:
-            # Même modèle que le blocage du cd ci-dessus : annoncer, ne
-            # rien envoyer, laisser la saisie telle quelle.
+            # Rien n'est envoyé, mais contrairement au cd ci-dessus il n'y
+            # a rien à retoucher : la saisie est vidée comme après un
+            # envoi, et Flèche haut retrouve la commande au besoin.
             self.voix.dire(
                 f"{programme} : {MESSAGE_PLEIN_ECRAN} Commande non envoyée.",
                 braille=f"{programme} : plein écran non pris en charge",
                 interrompre=True,
             )
             return
-        self.saisie.SetValue("")
-        self.historique.append(commande)
-        self.index_historique = len(self.historique)
-        self._brouillons.clear()
         if interactif or automatique:
             self.executer_interactif(commande, automatique=automatique)
         else:
@@ -1256,6 +1249,11 @@ class PanneauSession(wx.Panel):
         # laisser la détection de l'écran alternatif fermer toute la
         # session, shell compris.
         programme = _programme_plein_ecran(ligne, interactif=True)
+        self.saisie.SetValue("")
+        if ligne.strip():
+            self.historique.append(ligne)
+            self.index_historique = len(self.historique)
+            self._brouillons.clear()
         if programme is not None:
             self.voix.dire(
                 f"{programme} : {MESSAGE_PLEIN_ECRAN} Ligne non envoyée.",
@@ -1263,11 +1261,6 @@ class PanneauSession(wx.Panel):
                 interrompre=True,
             )
             return
-        self.saisie.SetValue("")
-        if ligne.strip():
-            self.historique.append(ligne)
-            self.index_historique = len(self.historique)
-            self._brouillons.clear()
         # Le terminal distant renvoie la ligne tapée (écho) : elle reste
         # dans la transcription, mais n'est pas relue à voix haute.
         self._echo_attendu = ligne.strip() or None
@@ -1916,7 +1909,7 @@ class PanneauSession(wx.Panel):
             return
 
         if (
-            self.distant and not interactif and not resultat.interrompue
+            not interactif and not resultat.interrompue
             and resultat.code_retour != 0
             and MOTIF_TERMINAL_REQUIS.search(resultat.sortie)
         ):

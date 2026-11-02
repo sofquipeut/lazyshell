@@ -39,6 +39,8 @@ import keyring
 import paramiko
 
 from execution import (
+    HAUTEUR_PTY,
+    LARGEUR_PTY,
     MAX_LIGNES,
     SEUIL_COMMANDE_LONGUE,
     SEUIL_INVITE,
@@ -46,12 +48,6 @@ from execution import (
     nettoyer_ansi,
 )
 from terminal_ligne import NettoyeurTerminal
-
-# Taille du pseudo-terminal en mode interactif. Large pour qu'un programme
-# qui replie lui-même ses lignes à la largeur du terminal ne coupe pas une
-# phrase en deux lignes que NVDA lirait séparément.
-LARGEUR_PTY = 200
-HAUTEUR_PTY = 50
 
 # « dumb » : la plupart des programmes renoncent alors aux couleurs et au
 # redessin de ligne, ce qui laisse moins de séquences à interpréter (voir
