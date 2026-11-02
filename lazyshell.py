@@ -1679,6 +1679,15 @@ class PanneauSession(wx.Panel):
             nom = chemin.rsplit("/", 1)[-1]
             self.charger_dossier_sftp(parent, nom_a_selectionner=nom)
 
+    def editer_resultat_recherche(self, chemin: str) -> None:
+        """Édite directement un fichier trouvé par la recherche
+        (DialogueRechercheFichiers), sans passer par
+        aller_a_resultat_recherche puis un second Entrée dans la liste
+        de navigation — l'aller-retour jugé trop long par l'utilisateur
+        pour un simple besoin d'édition."""
+        nom = chemin.rsplit("/", 1)[-1]
+        self._editer_fichier_sftp(chemin, nom)
+
     def sauvegarder_favoris(self) -> None:
         """Réécrit ssh_profiles.json avec les favoris à jour de ce
         profil. Recharge la liste complète plutôt que de ne réécrire que
@@ -2558,7 +2567,21 @@ class DialogueRechercheFichiers(wx.Dialog):
     Fenetre.rechercher_fichiers_sftp après ShowModal()). Échap et la
     croix, eux, refusent de fermer tant qu'une recherche est en cours —
     Annuler est le seul moyen explicite de l'interrompre, même logique
-    que DialogueProgression."""
+    que DialogueProgression.
+
+    Entrée sur un résultat fichier l'édite directement (téléchargement,
+    Bloc-notes, renvoi si modifié — PanneauSession.editer_resultat_recherche)
+    sans fermer cette boîte : l'ancien chemin obligeait à « Aller au
+    résultat » (ferme la boîte, navigue) puis un second Entrée dans la
+    liste de navigation principale pour éditer, jugé trop long par
+    l'utilisateur pour un besoin aussi courant. Entrée sur un résultat
+    dossier garde l'ancien comportement (Aller au résultat, referme la
+    boîte) : seule l'édition d'un fichier profite de rester sur place,
+    naviguer n'a pas le même besoin de rapidité. Comme pour la liste de
+    navigation principale (voir plus haut dans ce fichier), Entrée sur
+    une wx.ListBox n'est pas fiable via EVT_KEY_DOWN — captée via le
+    même EVT_CHAR_HOOK que Échap, en vérifiant que le focus est bien sur
+    la liste des résultats avant d'agir."""
 
     def __init__(self, parent, panneau: PanneauSession):
         super().__init__(
@@ -2630,8 +2653,15 @@ class DialogueRechercheFichiers(wx.Dialog):
         wx.CallAfter(self.champ_motif.SetFocus)
 
     def _sur_touche(self, evt):
-        if evt.GetKeyCode() == wx.WXK_ESCAPE:
+        code = evt.GetKeyCode()
+        if code == wx.WXK_ESCAPE:
             self._annuler_recherche_en_cours()
+        elif code in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER) and self.FindFocus() is self.liste:
+            # Ne pas evt.Skip() ici : sinon Entrée déclenche en plus le
+            # bouton par défaut de la boîte (Rechercher), qui relancerait
+            # une recherche au lieu d'agir sur le résultat sélectionné.
+            self._activer_resultat_selectionne()
+            return
         evt.Skip()
 
     def _sur_rechercher(self, evt):
@@ -2742,6 +2772,19 @@ class DialogueRechercheFichiers(wx.Dialog):
         chemin, dossier = resultat
         self.panneau.aller_a_resultat_recherche(chemin, dossier)
         self.EndModal(wx.ID_OK)
+
+    def _activer_resultat_selectionne(self) -> None:
+        """Entrée sur la liste des résultats : édite directement un
+        fichier sans fermer la boîte (voir docstring de la classe) ;
+        un dossier garde le comportement d'« Aller au résultat »."""
+        resultat = self._resultat_selectionne()
+        if resultat is None:
+            return
+        chemin, dossier = resultat
+        if dossier:
+            self._sur_aller(None)
+        else:
+            self.panneau.editer_resultat_recherche(chemin)
 
     def _sur_annuler_recherche(self, evt):
         self._annuler_recherche_en_cours()

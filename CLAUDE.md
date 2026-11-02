@@ -1353,6 +1353,36 @@ L'environnement Python est dans `venv`. Utiliser
 - **Version 1.7.0.** L'avertissement `cd`/`Set-Location`, et le
   correctif `[erreur]`/stderr ci-dessus.
 
+- **Recherche de fichiers : Entrée sur un résultat fichier l'édite
+  directement, sans fermer la boîte.** Demandé par l'utilisateur :
+  l'ancien chemin pour éditer un fichier trouvé passait par « Aller au
+  résultat » (ferme `DialogueRechercheFichiers`, navigue jusqu'au
+  fichier dans la liste de navigation principale) puis un second Entrée
+  dans cette liste pour l'ouvrir en édition — jugé trop long pour un
+  besoin courant. Nouvelle méthode `PanneauSession.
+  editer_resultat_recherche(chemin)`, simple relais vers
+  `_editer_fichier_sftp` (déjà utilisée par la liste de navigation
+  elle-même) : télécharge, ouvre Bloc-notes, attend sa fermeture, renvoie
+  seulement si modifié — inchangé, aucune nouvelle logique d'édition.
+  Côté boîte, `DialogueRechercheFichiers._sur_touche` (déjà branchée sur
+  `EVT_CHAR_HOOK` pour Échap, seul moyen fiable de capter une touche sur
+  une `wx.ListBox` — voir plus haut dans ce journal) reconnaît en plus
+  Entrée quand le focus est sur la liste de résultats : un résultat
+  fichier appelle directement `editer_resultat_recherche` sans fermer la
+  boîte (la clé de la demande — la boîte n'a jamais été quittée, donc
+  « revenir aux résultats » après Bloc-notes ne demande aucun code en
+  plus, la sélection et le focus n'ont simplement pas bougé) ; un
+  résultat dossier garde l'ancien comportement (« Aller au résultat »,
+  ferme la boîte) — non demandé pour ce cas, et naviguer n'a pas le même
+  besoin de rapidité qu'éditer. Le bouton « Aller au résultat » et le
+  double-clic ne changent pas, y compris sur un résultat fichier (encore
+  utile pour seulement naviguer jusqu'à un fichier sans l'éditer). Reste
+  à vérifier au clavier avec NVDA : Entrée sur un résultat fichier
+  (édition directe, boîte toujours ouverte ensuite), Entrée sur un
+  résultat dossier (comportement inchangé), et qu'Entrée dans le champ
+  de motif lance toujours bien la recherche sans déclencher ce nouveau
+  chemin.
+
 ## Idées à reprendre plus tard
 
 Notées en passant, pas encore faites — pas de quoi se précipiter dessus
