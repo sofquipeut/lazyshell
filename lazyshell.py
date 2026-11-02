@@ -20,6 +20,7 @@ import json
 import logging
 import queue
 import re
+import shlex
 import sys
 import threading
 import time
@@ -527,6 +528,119 @@ def _commande_cd_isolee(commande: str) -> bool:
     if "\n" in ligne or re.search(r"[;&|]", ligne):
         return False
     return bool(MOTIF_COMMANDE_CD.match(ligne))
+
+
+# Interpréteurs qui ne deviennent interactifs que tapés seuls : avec un
+# argument (un script, -c...), ils exécutent puis rendent la main.
+INTERPRETEURS_SEULS = {
+    "python", "python3", "node", "sh", "bash", "zsh", "irb", "redis-cli",
+}
+# Clients de base de données : interactifs même avec des options de
+# connexion, sauf si une requête ou un fichier leur est donné.
+CLIENTS_BASE = {"mysql", "mariadb", "psql", "mongosh"}
+OPTIONS_NON_INTERACTIVES = {
+    "-e", "-c", "-f", "--execute", "--command", "--file", "--eval",
+}
+# Options de ssh suivies d'une valeur, pour retrouver l'hôte parmi les
+# arguments et savoir si une commande distante le suit.
+OPTIONS_SSH_AVEC_VALEUR = {
+    "-p", "-i", "-l", "-o", "-J", "-F", "-L", "-R", "-D", "-b", "-c", "-E",
+    "-m", "-O", "-Q", "-S", "-W", "-w",
+}
+
+
+def _commande_interactive_connue(commande: str) -> bool:
+    """Vrai pour une commande dont on sait d'avance qu'elle attend un
+    terminal et un échange (Entrée seule la lance alors en session
+    interactive, comme Ctrl+Entrée). Liste volontairement limitée aux
+    cas sans ambiguïté : le rattrapage après coup (MOTIF_TERMINAL_REQUIS)
+    couvre le reste. Un enchaînement (tube, point-virgule, plusieurs
+    lignes) n'est jamais détecté : l'utilisateur compose alors quelque
+    chose de précis."""
+    ligne = commande.strip()
+    if "\n" in ligne or re.search(r"[;&|<>]", ligne):
+        return False
+    try:
+        mots = shlex.split(ligne)
+    except ValueError:
+        return False
+    if mots and mots[0] == "sudo":
+        mots = mots[1:]
+    if not mots:
+        return False
+    programme, arguments = mots[0].rsplit("/", 1)[-1], mots[1:]
+
+    if programme in INTERPRETEURS_SEULS:
+        return not arguments or arguments == ["-i"]
+    if programme in CLIENTS_BASE:
+        return not any(
+            a.split("=", 1)[0] in OPTIONS_NON_INTERACTIVES for a in arguments
+        )
+    if programme == "sqlite3":
+        # sqlite3 base.db : interactif ; sqlite3 base.db "requête" : non.
+        return len([a for a in arguments if not a.startswith("-")]) <= 1
+    if programme == "su":
+        return "-c" not in arguments and "--command" not in arguments
+    if programme in ("docker", "podman", "kubectl"):
+        # docker compose exec alloue un terminal de lui-même (sauf -T).
+        if arguments[:2] == ["compose", "exec"]:
+            return "-T" not in arguments
+        if not arguments or arguments[0] not in ("exec", "run"):
+            return False
+        options = [a for a in arguments if a.startswith("-")]
+        if any(o in ("-it", "-ti") for o in options):
+            return True
+        courtes = "".join(o[1:] for o in options if not o.startswith("--"))
+        longues = set(options)
+        interactive = "i" in courtes or "--interactive" in longues
+        terminal = "t" in courtes or "--tty" in longues
+        return interactive and terminal
+    if programme == "ssh":
+        # ssh hôte : session ; ssh hôte commande : exécution simple.
+        positionnels = []
+        i = 0
+        while i < len(arguments):
+            a = arguments[i]
+            if a in OPTIONS_SSH_AVEC_VALEUR:
+                i += 2
+                continue
+            if not a.startswith("-"):
+                positionnels.append(a)
+            i += 1
+        return len(positionnels) == 1
+    return False
+
+
+# Messages d'un programme qui a refusé de démarrer faute de terminal, en
+# mode normal (sans pseudo-terminal) : _commande_terminee propose alors
+# de la relancer en session interactive. La commande a échoué sans rien
+# faire, la relancer est sans risque.
+MOTIF_TERMINAL_REQUIS = re.compile(
+    r"not a tty|is not a terminal|a terminal is required|"
+    r"must be run from a terminal|no tty present|requires a tty|"
+    r"inappropriate ioctl for device",
+    re.IGNORECASE,
+)
+
+# Deux espaces ou plus à la suite : séparation de colonnes (ls en
+# terminal range les noms en colonnes sur une même ligne).
+MOTIF_COLONNES = re.compile(r" {2,}")
+
+
+def _ponctuer_pour_la_voix(lignes: list[str]) -> str:
+    """Session interactive : relie les lignes par des points et les
+    colonnes par des virgules, pour que la synthèse marque des pauses
+    au lieu de tout enchaîner d'une traite. Pour la voix seulement :
+    l'affichage et le bloc copié gardent le texte d'origine."""
+    morceaux = []
+    for ligne in lignes:
+        ligne = MOTIF_COLONNES.sub(", ", _pour_la_voix(ligne).strip())
+        if not ligne:
+            continue
+        if ligne[-1] not in ".,;:!?":
+            ligne += "."
+        morceaux.append(ligne)
+    return " ".join(morceaux)
 
 
 @dataclass
@@ -1049,8 +1163,14 @@ class PanneauSession(wx.Panel):
         self.historique.append(commande)
         self.index_historique = len(self.historique)
         self._brouillons.clear()
-        if interactif:
-            self.executer_interactif(commande)
+        # Entrée seule sur une commande connue pour attendre un terminal
+        # (python3 seul, docker exec -it...) : session interactive
+        # d'office, plutôt qu'un échec à rattraper ensuite.
+        automatique = (
+            not interactif and self.distant and _commande_interactive_connue(commande)
+        )
+        if interactif or automatique:
+            self.executer_interactif(commande, automatique=automatique)
         else:
             self.executer(commande)
 
@@ -1353,7 +1473,7 @@ class PanneauSession(wx.Panel):
 
         threading.Thread(target=travailler, daemon=True).start()
 
-    def executer_interactif(self, commande: str) -> None:
+    def executer_interactif(self, commande: str, automatique: bool = False) -> None:
         """Lance la commande avec un pseudo-terminal (Ctrl+Entrée).
 
         Contrairement à executer(), la sortie s'affiche et se lit au fil
@@ -1383,9 +1503,15 @@ class PanneauSession(wx.Panel):
         self._debut_zone_interactive = self.sortie.GetLastPosition()
         self.sortie.AppendText(f"\nSession interactive : {commande}\n")
         self._debut_fragment = self.sortie.GetLastPosition()
+        # « Lancée en » quand ce n'est pas l'utilisateur qui l'a demandé :
+        # sans ça, rien ne lui dirait pourquoi Entrée ne lance plus une
+        # nouvelle commande.
+        debut_annonce = (
+            "Lancée en session interactive." if automatique else "Session interactive."
+        )
         self.voix.dire(
-            "Session interactive. Entrée envoie la ligne, Ctrl+Maj+K interrompt.",
-            braille="Session interactive",
+            f"{debut_annonce} Entrée envoie la ligne, Ctrl+Maj+K interrompt.",
+            braille=debut_annonce,
             interrompre=True,
         )
 
@@ -1448,11 +1574,13 @@ class PanneauSession(wx.Panel):
     def _annoncer_interactif(self) -> None:
         if not self:
             return
-        lignes = [_pour_la_voix(l) for l in self._a_annoncer]
+        lignes = self._a_annoncer
         self._a_annoncer = []
+        suite = ""
         if len(lignes) > SEUIL_LECTURE_INTEGRALE:
-            reste = len(lignes) - LIGNES_APERCU
-            lignes = lignes[:LIGNES_APERCU] + [f"Et {reste} lignes de plus."]
+            suite = f"Et {len(lignes) - LIGNES_APERCU} lignes de plus."
+            lignes = lignes[:LIGNES_APERCU]
+        morceaux = [_ponctuer_pour_la_voix(lignes), suite]
         # Une invite identique à la précédente (« >>> », « $ ») n'est pas
         # répétée après une sortie : seule une invite nouvelle est lue,
         # c'est elle qui dit ce que le programme attend. Sans aucune
@@ -1460,12 +1588,12 @@ class PanneauSession(wx.Panel):
         # que la ligne envoyée a bien été traitée.
         fragment = self._fragment_courant
         if fragment and (not lignes or fragment != self._dernier_fragment_annonce):
-            lignes.append(fragment)
+            morceaux.append(fragment)
             self._dernier_fragment_annonce = fragment
-        if not lignes:
+        texte = " ".join(m for m in morceaux if m)
+        if not texte:
             return
-        texte = " ".join(lignes)
-        self.voix.dire(texte, braille=fragment or lignes[-1])
+        self.voix.dire(texte, braille=fragment or (lignes[-1] if lignes else texte))
 
     def definir_repertoire(self, repertoire: str) -> None:
         """Change le répertoire courant et rafraîchit le titre aussitôt,
@@ -1606,6 +1734,30 @@ class PanneauSession(wx.Panel):
             and not self.executeur.connexion_active
         ):
             self._proposer_reconnexion()
+            return
+
+        if (
+            self.distant and not interactif and not resultat.interrompue
+            and resultat.code_retour != 0
+            and MOTIF_TERMINAL_REQUIS.search(resultat.sortie)
+        ):
+            # Après coup : laisse d'abord passer l'annonce du bloc.
+            wx.CallAfter(self._proposer_relance_interactive, commande)
+
+    def _proposer_relance_interactive(self, commande: str) -> None:
+        """Rattrapage d'une commande qui a refusé de démarrer faute de
+        terminal (« stdin is not a terminal », « a terminal is
+        required »...) : couvre les programmes que
+        _commande_interactive_connue ne connaît pas."""
+        if not self or self.en_cours:
+            return
+        if wx.MessageBox(
+            "Cette commande a besoin d'un terminal interactif. "
+            "La relancer en session interactive ?",
+            f"Terminal requis — {self.nom}", wx.YES_NO | wx.ICON_QUESTION,
+        ) == wx.YES:
+            self.executer_interactif(commande)
+        self.saisie.SetFocus()
 
     def _proposer_reconnexion(self) -> None:
         if self.profil is None:
