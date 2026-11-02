@@ -45,6 +45,7 @@ de fenêtre de console.</p>
 <nav aria-label="Sommaire">
 <ul>
   <li><a href="#fonctionnement">Fonctionnement général</a></li>
+  <li><a href="#interactif">Sessions interactives</a></li>
   <li><a href="#navigation">Mode navigation (SFTP)</a></li>
   <li><a href="#raccourcis">Raccourcis clavier</a></li>
   <li><a href="#limites">Limites connues</a></li>
@@ -140,6 +141,81 @@ enchaînée sur la même ligne (par exemple <code>cd un_dossier; git
 status</code>), n'est en revanche pas concerné par cet avertissement :
 le changement de répertoire profite bien à la suite de cette même
 commande, dans ce même processus, avant qu'il ne se termine.</p>
+
+<h2 id="interactif">Sessions interactives</h2>
+
+<p>Certains programmes ont besoin d'un vrai terminal et d'un échange
+suivi : un shell dans un conteneur (<code>docker exec -it</code>), un
+interpréteur (<code>python3</code>, <code>node</code>), un client de base
+de données (<code>mysql</code>, <code>psql</code>, <code>sqlite3</code>),
+une invite de mot de passe ou de confirmation. Pour eux, LazyShell ouvre
+une session interactive, en local comme en SSH.</p>
+
+<h3>Lancer une session interactive</h3>
+
+<ul>
+<li><strong>Automatiquement</strong> : Entrée seule suffit pour les
+commandes connues pour attendre un terminal (un interpréteur tapé seul,
+<code>docker exec -it</code>, <code>docker run -it</code>,
+<code>docker compose exec</code>, <code>kubectl exec -it</code>,
+<code>mysql</code>, <code>psql</code>, <code>sqlite3</code>,
+<code>su</code>, <code>ssh</code> vers une machine sans commande
+derrière). L'annonce « Lancée en session interactive » le signale.</li>
+<li><strong>Après coup</strong> : si une commande envoyée normalement
+échoue parce qu'elle réclame un terminal (« stdin is not a terminal »,
+« a terminal is required »...), une boîte propose de la relancer en
+session interactive. Oui est le choix par défaut.</li>
+<li><strong>À la demande</strong> : Ctrl+Entrée dans la saisie lance
+n'importe quelle commande en session interactive (aussi dans le menu
+Session, « Lancer en session interactive »).</li>
+</ul>
+
+<h3>Pendant la session</h3>
+
+<ul>
+<li>Le champ de saisie s'appelle « Saisie interactive » et le titre de
+la fenêtre indique « session interactive ».</li>
+<li>Entrée envoie la ligne tapée au programme, même vide (une simple
+validation répond à beaucoup d'invites). Le copier-coller fonctionne
+normalement dans la saisie, et Flèche haut/bas rappelle les lignes déjà
+envoyées.</li>
+<li>La sortie s'affiche et se lit au fil de l'eau. Pour la voix, les
+lignes sont séparées par des points et les colonnes (par exemple celles
+de <code>ls</code>) par des virgules, pour marquer des pauses ;
+l'affichage, lui, garde le texte d'origine. La ligne que vous venez de
+taper, renvoyée par le programme, n'est pas relue. Une invite déjà
+entendue (<code>&gt;&gt;&gt;</code>, <code>/ #</code>) n'est répétée que
+si la ligne envoyée n'a rien affiché : c'est alors le signe qu'elle a
+été traitée.</li>
+<li>Une invite de mot de passe ouvre d'elle-même une boîte « Saisie
+masquée ». Si elle ne s'ouvre pas, Ctrl+Maj+P l'ouvre à la demande. Le
+mot de passe n'est ni affiché, ni lu, ni gardé dans l'historique ou le
+journal ; s'il réapparaissait dans la sortie, il y serait remplacé par
+« (masqué) ».</li>
+<li>Ctrl+Maj+K envoie Ctrl+C au programme, comme dans un vrai terminal :
+la commande en cours s'arrête mais la session reste ouverte. Un second
+Ctrl+Maj+K dans les 3 secondes ferme la session.</li>
+<li>Les pagers sont désactivés : <code>man</code>, <code>git log</code>,
+<code>systemctl status</code> affichent tout leur texte d'un coup.</li>
+</ul>
+
+<p>À la fin, la session devient un bloc ordinaire, marqué « interactif »,
+qui contient toute la transcription de l'échange et se copie comme les
+autres (Ctrl+Maj+C). L'annonce de fin dit « Session interactive
+terminée », suivie de la dernière sortie si elle n'avait pas encore été
+lue.</p>
+
+<h3>Programmes plein écran</h3>
+
+<p>Les programmes qui dessinent un écran entier (<code>vim</code>,
+<code>nano</code>, <code>htop</code>, <code>top</code>,
+<code>tmux</code>, <code>watch</code>...) ne sont pas pris en charge : ils
+ne sont pas lisibles ligne par ligne. Ils sont refusés avant d'être lancés,
+avec une explication, y compris tapés dans un shell déjà ouvert en
+session interactive. Un programme qui passe en plein écran en cours de
+route ferme la session, avec la même explication. Pour modifier un
+fichier distant, le mode navigation (Ctrl+Maj+F, puis Entrée sur le
+fichier) l'ouvre dans le Bloc-notes.</p>
 
 <h2 id="navigation">Mode navigation (SFTP)</h2>
 
@@ -267,12 +343,14 @@ corbeille côté serveur : une suppression SFTP est définitive.</p>
 <table>
 <tr><th scope="col">Touche</th><th scope="col">Action</th></tr>
 <tr><td>Entrée</td><td>Envoyer la commande</td></tr>
+<tr><td>Ctrl+Entrée</td><td>Lancer la commande en session interactive</td></tr>
 <tr><td>Maj+Entrée</td><td>Saut de ligne dans la saisie (commande multiligne)</td></tr>
 <tr><td>F6</td><td>Basculer entre saisie et sortie</td></tr>
 <tr><td>Échap</td><td>Revenir au champ de saisie</td></tr>
 <tr><td>Flèche haut / bas</td><td>Historique des commandes (dans la saisie)</td></tr>
 <tr><td>Ctrl+Espace</td><td>Compléter le chemin sous le curseur (session locale uniquement)</td></tr>
-<tr><td>Ctrl+Maj+K (ou Ctrl+Pause)</td><td>Interrompre la commande en cours</td></tr>
+<tr><td>Ctrl+Maj+K (ou Ctrl+Pause)</td><td>Interrompre la commande en cours ; en session interactive, envoyer Ctrl+C, puis fermer la session au second appui</td></tr>
+<tr><td>Ctrl+Maj+P</td><td>Saisir un mot de passe sans écho (session interactive)</td></tr>
 <tr><td>Ctrl+= / Ctrl+-</td><td>Agrandir / réduire la police</td></tr>
 </table>
 
@@ -341,13 +419,16 @@ compte à l'usage.</p>
 <h2 id="limites">Limites connues</h2>
 
 <ul>
-<li>SSH fonctionne sans pseudo-terminal (<code>get_pty=False</code>) :
-stdout et stderr restent séparés, comme en local. Conséquence acceptée :
-une invite purement interactive côté shell distant (par exemple
-<code>read -p</code> de bash, qui n'écrit rien du tout hors mode
-interactif) n'écrit rien de détectable ; seule l'interruption manuelle
-(Ctrl+Maj+K) s'applique alors. Même limite que <code>Read-Host</code>
-bloqué en local par <code>-NonInteractive</code>.</li>
+<li>En mode normal, SSH fonctionne sans pseudo-terminal
+(<code>get_pty=False</code>) : stdout et stderr restent séparés, comme en
+local. Une invite purement interactive (par exemple <code>read -p</code>
+de bash, ou <code>Read-Host</code> en local) n'y écrit rien de
+détectable : une session interactive (Ctrl+Entrée) est faite pour ce
+cas.</li>
+<li>En session interactive, stdout et stderr arrivent mélangés : c'est
+le fonctionnement normal d'un terminal.</li>
+<li>Les programmes plein écran (vim, nano, htop...) ne sont pas pris en
+charge, voir <a href="#interactif">Sessions interactives</a>.</li>
 <li>Le canal d'annonce JAWS n'a jamais été vérifié avec un JAWS réel :
 l'identifiant COM et les noms de méthode utilisés viennent des
 références les plus courantes sur l'automatisation JAWS, pas d'une

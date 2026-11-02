@@ -49,7 +49,9 @@ confort ici : c'est le cahier des charges.**
   données, exécutable — passe à l'anglais.
 - Modèle « une commande à la fois », pas de terminal interactif plein
   écran. Les invites de saisie détectées ouvrent une boîte de dialogue
-  accessible.
+  accessible. Exception orientée ligne, à la demande : les sessions
+  interactives (voir plus bas, « Mode interactif »), jamais un émulateur
+  de terminal complet.
 - Sortie découpée en blocs. Un bloc = une commande, sa sortie, son code de
   retour, son horodatage. Le rendu textuel est secondaire, la structure
   fait foi.
@@ -86,7 +88,9 @@ confort ici : c'est le cahier des charges.**
   interactive côté shell distant (ex. `read -p` de bash, qui n'écrit rien
   du tout hors mode interactif) n'écrit rien de détectable ; seule
   l'interruption manuelle (Ctrl+Maj+K) s'applique alors. Même famille de
-  limite que `Read-Host` bloqué en local par `-NonInteractive`.
+  limite que `Read-Host` bloqué en local par `-NonInteractive`. Ce cas
+  est couvert depuis par les sessions interactives (voir « Mode
+  interactif »), seul endroit où un pseudo-terminal est demandé.
 - Interruption d'une commande par **Ctrl+Maj+K**, raccourci principal
   (Ctrl+Pause existe toujours en secours mais n'est pas mis en avant :
   absente ou remappée sur certains claviers).
@@ -1382,6 +1386,69 @@ L'environnement Python est dans `venv`. Utiliser
   résultat dossier (comportement inchangé), et qu'Entrée dans le champ
   de motif lance toujours bien la recherche sans déclencher ce nouveau
   chemin.
+
+- **Mode interactif (branche `mode-interactif`, paliers 1 à 5, chacun
+  vérifié par l'utilisateur au clavier avec NVDA sur le VPS ou en local
+  avant le suivant).** Besoin : `docker exec -it` (refusé jusque-là,
+  « stdin is not a terminal »), invites de mot de passe/confirmation,
+  petits REPL. Orienté ligne, pas un émulateur de terminal : la sortie
+  s'ajoute au champ de sortie et se lit au fil de l'eau, la saisie
+  envoie une ligne par Entrée.
+
+  *Lancement* : Ctrl+Entrée force le mode ; Entrée seule le choisit
+  d'office pour une liste fermée de commandes sans ambiguïté
+  (`_commande_interactive_connue` : interpréteur tapé seul, `docker
+  exec/run -it`, `docker compose exec` sans `-T`, `kubectl exec -it`,
+  clients de base sans `-e`/`-c`, `su` sans `-c`, `ssh hôte` sans
+  commande) ; une commande normale qui échoue avec un message de type
+  « not a tty » (`MOTIF_TERMINAL_REQUIS`) propose une relance Oui/Non.
+  Choisi plutôt qu'une option par profil ou un état à basculer : rien à
+  mémoriser, et Ctrl+Entrée sur une commande ordinaire ne casse rien.
+
+  *Technique* : SSH par `transport.open_session()` + `get_pty(term=
+  "dumb", 200x50)` (`ExecuteurSSH.executer_interactif`), stdout et
+  stderr mélangés, accepté dans ce mode seulement ; préfixe `export
+  PAGER=cat GIT_PAGER=cat MANPAGER=cat SYSTEMD_PAGER=cat`. Local par
+  ConPTY via **pywinpty** (nouvelle dépendance, ~1 Mo, choisie plutôt
+  qu'un ConPTY écrit à la main en ctypes ; `PTY` bas niveau, pas
+  `PtyProcess` qui passe par une socket locale), PowerShell sans
+  `-NonInteractive`, `PYTHON_BASIC_REPL=1`. Vérifié depuis pythonw :
+  aucune fenêtre de console. Piège trouvé : `PTY.spawn(appname,
+  cmdline)` ajoute déjà le programme, `cmdline` ne doit pas le répéter
+  (sinon un PowerShell en lance un second qui vide les variables du
+  prélude). `compiler.bat` embarque pywinpty par `--collect-all winpty`
+  (OpenConsole.exe, conpty.dll), vérifié par une compilation d'essai à
+  part, pas encore par l'exe final lancé.
+
+  *Texte* : `terminal_ligne.NettoyeurTerminal` interprète \r, retour
+  arrière, `ESC[K`, déplacements horizontaux, et ignore couleurs, OSC
+  (titre de fenêtre) et déplacements verticaux ; signale l'écran
+  alternatif (`?1049h`...). Voix : lignes jointes par des points,
+  colonnes (2 espaces ou plus) par des virgules
+  (`_ponctuer_pour_la_voix`), affichage inchangé ; écho de la ligne
+  envoyée non relu ; invite identique à la précédente relue seulement
+  sans autre sortie ; regroupement des paquets sur 300 ms, 1 s au plus.
+  La dernière sortie non lue est dite après « Session interactive
+  terminée » (sinon l'annonce de fin la coupait). Le tout devient un
+  bloc ordinaire marqué « interactif ».
+
+  *Mots de passe* : invite reconnue (`MOTIF_MOT_DE_PASSE`, élargi à
+  `[sudo]`, passcode...) ouvre une boîte masquée, Ctrl+Maj+P à la
+  demande. Jamais dans l'historique ni le journal ; tout secret envoyé
+  (3 caractères ou plus) est remplacé par « (masqué) » s'il réapparaît
+  dans la sortie. Testé sur le VPS avec `getpass` (le compte SSH est
+  root, sudo n'y demande rien).
+
+  *Interruption* : Ctrl+Maj+K envoie \x03 ; un second dans les 3 s ferme
+  le canal (SSH) ou tue l'arborescence (local). *Plein écran* : vim,
+  nano, htop, top (sauf `-b`), tmux, watch... refusés avant lancement,
+  y compris en mode normal (où ils restaient bloqués) et tapés dans un
+  shell interactif ; pagers refusés en interactif seulement ; écran
+  alternatif détecté en cours de route : session fermée avec
+  explication (mode navigation conseillé pour éditer). Une commande
+  refusée vide la saisie et rejoint l'historique, à la différence du
+  blocage du `cd` (signalé à l'usage : Flèche bas ne retrouvait pas une
+  saisie vide).
 
 ## Idées à reprendre plus tard
 

@@ -15,6 +15,15 @@ De plus, j'utilisais WinSCP en parallèle pour parcourir un serveur distant, afi
   son horodatage optionnel), navigables et copiables indépendamment. Ces blocs sont également accessibles à partir d'une liste.
 - Historique des commandes, détection des invites de saisie (mot de passe,
   confirmation) ouvrant une boîte de dialogue accessible.
+- Sessions interactives, en local comme en SSH, pour les programmes qui
+  ont besoin d'un vrai terminal : `docker exec -it`, `python3`, `mysql`,
+  invites de mot de passe ou de confirmation. Lancées d'office pour les
+  commandes connues, proposées après coup si une commande réclame un
+  terminal, ou forcées par Ctrl+Entrée. Sortie lue au fil de l'eau, une
+  ligne envoyée par Entrée, mots de passe saisis dans une boîte masquée,
+  Ctrl+C par Ctrl+Maj+K, et un bloc copiable à la fin. Les programmes
+  plein écran (vim, htop...) sont refusés avec une explication (détail
+  dans la [documentation](docs/index.html#interactif)).
 - Profils de connexion SSH, identifiants dans le
   Gestionnaire d'identifiants Windows, mémorisation de la clé d'hôte à la
   première connexion.
@@ -77,11 +86,13 @@ Tout est également accessible depuis la barre de menus.
 | Touche | Action |
 |---|---|
 | Entrée | Envoyer la commande |
+| Ctrl+Entrée | Lancer la commande en session interactive |
 | Maj+Entrée | Saut de ligne dans la saisie (commande multiligne) |
 | F6 | Basculer entre saisie et sortie |
 | Échap | Revenir au champ de saisie |
 | Flèche haut / bas | Historique des commandes (dans la saisie) |
-| Ctrl+Maj+K (ou Ctrl+Pause) | Interrompre la commande en cours |
+| Ctrl+Maj+K (ou Ctrl+Pause) | Interrompre la commande en cours ; en session interactive, envoyer Ctrl+C, puis fermer la session au second appui |
+| Ctrl+Maj+P | Saisir un mot de passe sans écho (session interactive) |
 | Ctrl+= / Ctrl+- | Agrandir / réduire la police |
 
 **Session**
@@ -138,13 +149,14 @@ Tout est également accessible depuis la barre de menus.
 
 ## Limites connues
 
-- SSH fonctionne sans pseudo-terminal (`get_pty=False`) : stdout et
-  stderr restent séparés, comme en local. Conséquence acceptée : une
-  invite purement interactive côté shell distant (par exemple `read -p`
-  de bash, qui n'écrit rien du tout hors mode interactif) n'écrit rien de
-  détectable ; seule l'interruption manuelle (Ctrl+Maj+K) s'applique
-  alors. Même limite que `Read-Host` bloqué en local par
-  `-NonInteractive`.
+- En mode normal, SSH fonctionne sans pseudo-terminal (`get_pty=False`) :
+  stdout et stderr restent séparés, comme en local. Une invite purement
+  interactive (par exemple `read -p` de bash, ou `Read-Host` en local)
+  n'y écrit rien de détectable : une session interactive (Ctrl+Entrée)
+  est faite pour ce cas. En session interactive, stdout et stderr
+  arrivent mélangés, comme dans tout terminal.
+- Les programmes plein écran (vim, nano, htop...) ne sont pas pris en
+  charge : pour modifier un fichier distant, utiliser le mode navigation.
 - Le canal d'annonce JAWS n'a jamais été vérifié avec un JAWS réel :
   l'identifiant COM et les noms de méthode utilisés viennent des
   références les plus courantes sur l'automatisation JAWS, pas d'une
