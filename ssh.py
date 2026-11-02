@@ -45,6 +45,18 @@ from execution import (
     Resultat,
     nettoyer_ansi,
 )
+from terminal_ligne import NettoyeurTerminal
+
+# Taille du pseudo-terminal en mode interactif. Large pour qu'un programme
+# qui replie lui-même ses lignes à la largeur du terminal ne coupe pas une
+# phrase en deux lignes que NVDA lirait séparément.
+LARGEUR_PTY = 200
+HAUTEUR_PTY = 50
+
+# « dumb » : la plupart des programmes renoncent alors aux couleurs et au
+# redessin de ligne, ce qui laisse moins de séquences à interpréter (voir
+# terminal_ligne.py, qui reste le filet de sécurité pour les autres).
+TYPE_TERMINAL = "dumb"
 
 # Nom de service utilisé dans le Gestionnaire d'identifiants Windows.
 # Aucun mot de passe ni passphrase n'est jamais écrit en clair dans un
@@ -933,6 +945,125 @@ class ExecuteurSSH:
             tronquee=tronquee,
             interrompue=interrompue,
         )
+
+    # -- mode interactif --------------------------------------------------
+
+    def executer_interactif(
+        self,
+        commande: str,
+        repertoire: str | None = None,
+        sur_sortie: Callable[[list[str], str], None] | None = None,
+    ) -> Resultat:
+        """Lance la commande avec un pseudo-terminal et relaie sa sortie
+        au fil de l'eau, jusqu'à sa fin. Bloque : thread de travail.
+
+        sur_sortie(lignes, fragment) est appelée à chaque morceau reçu :
+        lignes terminées depuis l'appel précédent, et ligne encore
+        incomplète (une invite comme « >>> »). Pendant ce temps,
+        envoyer_saisie() transmet ce que l'utilisateur tape.
+
+        Avec un pseudo-terminal, stdout et stderr arrivent mélangés sur
+        un seul flux : conséquence acceptée, réservée à ce mode (le mode
+        normal garde get_pty=False).
+        """
+        with self._verrou:
+            client = self._client
+        if client is None:
+            return Resultat(
+                sortie="Aucune connexion SSH active.", code_retour=-1, duree=0.0,
+            )
+
+        debut = time.monotonic()
+        commande_finale = commande
+        if repertoire:
+            commande_finale = f"cd {shlex.quote(repertoire)} || exit 1\n{commande}"
+        logging.info("Exécution SSH interactive : %s", commande)
+
+        try:
+            transport = client.get_transport()
+            if transport is None or not transport.is_active():
+                raise paramiko.SSHException("Connexion SSH inactive.")
+            canal = transport.open_session()
+            canal.get_pty(term=TYPE_TERMINAL, width=LARGEUR_PTY, height=HAUTEUR_PTY)
+            canal.exec_command(commande_finale)
+        except (paramiko.SSHException, OSError) as erreur:
+            logging.exception("Lancement SSH interactif impossible")
+            return Resultat(
+                sortie=f"Impossible d'exécuter la commande : {erreur}",
+                code_retour=-1,
+                duree=time.monotonic() - debut,
+            )
+
+        canal.settimeout(0.25)
+        with self._verrou:
+            self._canal = canal
+
+        nettoyeur = NettoyeurTerminal()
+        decodeur = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        lignes: list[str] = []
+        tronquee = False
+
+        while True:
+            try:
+                morceau = canal.recv(4096)
+            except TimeoutError:
+                continue
+            except Exception:
+                # Canal fermé depuis l'extérieur (interrompre, fermer).
+                break
+            if not morceau:
+                break
+            nouvelles = nettoyeur.alimenter(decodeur.decode(morceau))
+            for ligne in nouvelles:
+                if len(lignes) < MAX_LIGNES:
+                    lignes.append(ligne)
+                elif not tronquee:
+                    tronquee = True
+                    lignes.append(f"[Sortie tronquée : plus de {MAX_LIGNES} lignes.]")
+            if sur_sortie is not None:
+                sur_sortie(nouvelles, nettoyeur.fragment)
+
+        reste = nettoyeur.vider()
+        if reste:
+            lignes.append(reste)
+            if sur_sortie is not None:
+                sur_sortie([reste], "")
+
+        interrompue = getattr(canal, "_interrompue", False)
+        try:
+            code = -1 if interrompue else canal.recv_exit_status()
+        except Exception:
+            code = -1
+        canal.close()
+        with self._verrou:
+            self._canal = None
+
+        duree = time.monotonic() - debut
+        logging.info(
+            "SSH interactif terminé, code %s, %.1f s, %d lignes",
+            code, duree, len(lignes),
+        )
+        return Resultat(
+            sortie="\n".join(lignes),
+            code_retour=code,
+            duree=duree,
+            tronquee=tronquee,
+            interrompue=interrompue,
+        )
+
+    def envoyer_saisie(self, texte: str) -> bool:
+        """Transmet du texte au programme lancé par executer_interactif.
+        Le texte n'est jamais journalisé : il peut s'agir d'un mot de passe."""
+        with self._verrou:
+            canal = self._canal
+        if canal is None:
+            return False
+        try:
+            canal.sendall(texte.encode("utf-8"))
+        except Exception:
+            logging.exception("Écriture sur le canal interactif impossible")
+            return False
+        return True
 
     # -- interruption ------------------------------------------------------
 

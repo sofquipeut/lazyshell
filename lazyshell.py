@@ -70,6 +70,10 @@ NOMS_VERBOSITE = {
 SEUIL_LECTURE_INTEGRALE = 10   # en dessous, on lit tout quoi qu'il arrive
 LIGNES_APERCU = 5              # niveau 1
 LIGNES_ERREUR = 15             # sur code de retour non nul
+
+# Session interactive : délai de regroupement des paquets reçus en une
+# seule annonce, en millisecondes (voir PanneauSession._planifier_annonce).
+DELAI_ANNONCE_INTERACTIVE = 300
 SEUIL_DUREE_ANNONCEE = 3.0     # en deçà, la durée n'est pas mentionnée
 LONGUEUR_COMMANDE_ENTETE = 60  # au-delà, la commande est tronquée
                                # dans l'en-tête et rappelée en entier
@@ -537,6 +541,9 @@ class Bloc:
     fin: int = 0
     duree: float = 0.0
     interrompue: bool = False
+    # Session interactive (Ctrl+Entrée) : la sortie est la transcription
+    # complète de l'échange, déjà entendue au fil de l'eau.
+    interactif: bool = False
 
     @property
     def nb_lignes(self) -> int:
@@ -563,6 +570,8 @@ class Bloc:
         if len(commande) > LONGUEUR_COMMANDE_ENTETE:
             commande = commande[:LONGUEUR_COMMANDE_ENTETE].rstrip() + "..."
         morceaux.append(commande)
+        if self.interactif:
+            morceaux.append("interactif")
 
         # Un code de retour négatif après interruption n'a aucun sens
         # pour l'utilisateur : c'est le signal qui a tué le processus.
@@ -653,6 +662,14 @@ def composer_annonce(bloc: Bloc, verbosite: int) -> str:
 
     if bloc.interrompue:
         return f"Interrompue après {bloc.duree:.0f} secondes."
+
+    # Session interactive : tout a déjà été lu au fil de l'eau, relire la
+    # transcription entière à la fin ne ferait que la répéter.
+    if bloc.interactif:
+        if bloc.code_retour == 0:
+            return "Session interactive terminée."
+        signal = libelle_signal(bloc.code_retour)
+        return f"Session interactive terminée, {signal or f'code {bloc.code_retour}'}."
 
     if bloc.code_retour != 0:
         signal = libelle_signal(bloc.code_retour)
@@ -901,6 +918,18 @@ class PanneauSession(wx.Panel):
         self._commande_en_cours = ""
         self._debut = 0.0
         self._invite_boite: wx.TextEntryDialog | None = None
+        # Session interactive en cours (Ctrl+Entrée, SSH seulement pour
+        # l'instant) : Entrée envoie alors la ligne au programme au lieu
+        # de lancer une nouvelle commande. Voir executer_interactif.
+        self.interactif = False
+        self._debut_zone_interactive = 0   # début de la zone provisoire
+        self._debut_fragment = 0           # début de la ligne incomplète affichée
+        self._echo_attendu: str | None = None
+        self._a_annoncer: list[str] = []
+        self._fragment_courant = ""
+        self._dernier_fragment_annonce = ""
+        self._premiere_attente = 0.0
+        self._minuterie_annonce: wx.CallLater | None = None
         # Mode navigation (SSH seulement) : bascule saisie+sortie contre un
         # navigateur SFTP. self.repertoire sert de chemin courant aux deux
         # modes, pour que l'un reprenne où l'autre s'est arrêté.
@@ -982,9 +1011,18 @@ class PanneauSession(wx.Panel):
 
     # -- saisie ------------------------------------------------------------
 
-    def envoyer(self) -> None:
+    def envoyer(self, interactif: bool = False) -> None:
+        if self.interactif:
+            self.envoyer_ligne_interactive()
+            return
         commande = self.saisie.GetValue().strip()
         if not commande:
+            return
+        if interactif and not self.distant:
+            self.voix.dire(
+                "Mode interactif disponible en session SSH seulement.",
+                interrompre=True,
+            )
             return
         if _commande_cd_isolee(commande):
             # Bloque l'envoi plutôt que de proposer un choix : chaque
@@ -1011,7 +1049,28 @@ class PanneauSession(wx.Panel):
         self.historique.append(commande)
         self.index_historique = len(self.historique)
         self._brouillons.clear()
-        self.executer(commande)
+        if interactif:
+            self.executer_interactif(commande)
+        else:
+            self.executer(commande)
+
+    def envoyer_ligne_interactive(self) -> None:
+        """Entrée pendant une session interactive : la ligne part au
+        programme, même vide (une simple validation est une réponse
+        valable à beaucoup d'invites)."""
+        ligne = self.saisie.GetValue()
+        self.saisie.SetValue("")
+        if ligne.strip():
+            self.historique.append(ligne)
+            self.index_historique = len(self.historique)
+            self._brouillons.clear()
+        # Le terminal distant renvoie la ligne tapée (écho) : elle reste
+        # dans la transcription, mais n'est pas relue à voix haute.
+        self._echo_attendu = ligne.strip() or None
+        # \r et non \n : c'est ce qu'envoie la touche Entrée d'un vrai
+        # terminal, le pseudo-terminal distant le traduit lui-même.
+        if not self.executeur.envoyer_saisie(ligne.replace("\n", "\r") + "\r"):
+            self.voix.dire("Envoi impossible.", interrompre=True)
 
     def _ligne_logique(self) -> tuple[int, int]:
         """Position du curseur en lignes reelles, et nombre de sauts.
@@ -1074,7 +1133,8 @@ class PanneauSession(wx.Panel):
             if maj:
                 evt.Skip()          # Maj+Entrée : saut de ligne
                 return
-            self.envoyer()
+            # Ctrl+Entrée : même commande, lancée en session interactive.
+            self.envoyer(interactif=ctrl)
             return
 
         if ctrl and code == wx.WXK_SPACE:
@@ -1293,6 +1353,120 @@ class PanneauSession(wx.Panel):
 
         threading.Thread(target=travailler, daemon=True).start()
 
+    def executer_interactif(self, commande: str) -> None:
+        """Lance la commande avec un pseudo-terminal (Ctrl+Entrée).
+
+        Contrairement à executer(), la sortie s'affiche et se lit au fil
+        de l'eau, et la saisie reste active : chaque Entrée envoie une
+        ligne au programme (envoyer_ligne_interactive). La sortie vit
+        d'abord dans une zone provisoire en fin de champ, remplacée à la
+        fin par un bloc ordinaire qui en contient la transcription.
+        """
+        if self.en_cours:
+            self.voix.dire(
+                "Une commande est déjà en cours. Ctrl+Maj+K pour l'interrompre.",
+                interrompre=True,
+            )
+            return
+
+        self.en_cours = True
+        self.interactif = True
+        self._commande_en_cours = commande
+        self._debut = time.monotonic()
+        self._echo_attendu = None
+        self._a_annoncer = []
+        self._fragment_courant = ""
+        self._dernier_fragment_annonce = ""
+        self.saisie.SetName(f"Saisie interactive, {self.nom}")
+        self.rafraichir_statut()
+
+        self._debut_zone_interactive = self.sortie.GetLastPosition()
+        self.sortie.AppendText(f"\nSession interactive : {commande}\n")
+        self._debut_fragment = self.sortie.GetLastPosition()
+        self.voix.dire(
+            "Session interactive. Entrée envoie la ligne, Ctrl+Maj+K interrompt.",
+            braille="Session interactive",
+            interrompre=True,
+        )
+
+        def travailler():
+            resultat = self.executeur.executer_interactif(
+                commande,
+                repertoire=self.repertoire,
+                sur_sortie=lambda lignes, fragment: wx.CallAfter(
+                    self._sortie_interactive, lignes, fragment
+                ),
+            )
+            wx.CallAfter(self._commande_terminee, commande, resultat)
+
+        threading.Thread(target=travailler, daemon=True).start()
+
+    def _sortie_interactive(self, lignes: list[str], fragment: str) -> None:
+        """Retour dans le thread principal : affiche les nouvelles lignes
+        et prépare leur annonce. La ligne incomplète (invite) est
+        réécrite à chaque appel plutôt qu'ajoutée, pour ne jamais
+        apparaître deux fois."""
+        if not self or not self.interactif:
+            return
+        fin = self.sortie.GetLastPosition()
+        if fin > self._debut_fragment:
+            self.sortie.Remove(self._debut_fragment, fin)
+        for ligne in lignes:
+            self.sortie.AppendText(ligne + "\n")
+        self._debut_fragment = self.sortie.GetLastPosition()
+        if fragment:
+            self.sortie.AppendText(fragment)
+
+        for ligne in lignes:
+            if self._echo_attendu is not None:
+                echo = self._echo_attendu
+                self._echo_attendu = None
+                if ligne.rstrip().endswith(echo):
+                    continue
+            if ligne.strip():
+                self._a_annoncer.append(ligne)
+        self._fragment_courant = fragment
+        self._planifier_annonce()
+
+    def _planifier_annonce(self) -> None:
+        """Regroupe ce qui arrive en rafale en une seule annonce : sans
+        ça, une sortie reçue en plusieurs paquets serait lue par petits
+        morceaux hachés. L'attente repart à chaque paquet, mais jamais
+        plus d'une seconde au total, pour qu'un flux continu soit lu
+        quand même."""
+        maintenant = time.monotonic()
+        minuterie = self._minuterie_annonce
+        if minuterie is not None and minuterie.IsRunning():
+            if maintenant - self._premiere_attente < 1.0:
+                minuterie.Restart(DELAI_ANNONCE_INTERACTIVE)
+            return
+        self._premiere_attente = maintenant
+        self._minuterie_annonce = wx.CallLater(
+            DELAI_ANNONCE_INTERACTIVE, self._annoncer_interactif
+        )
+
+    def _annoncer_interactif(self) -> None:
+        if not self:
+            return
+        lignes = [_pour_la_voix(l) for l in self._a_annoncer]
+        self._a_annoncer = []
+        if len(lignes) > SEUIL_LECTURE_INTEGRALE:
+            reste = len(lignes) - LIGNES_APERCU
+            lignes = lignes[:LIGNES_APERCU] + [f"Et {reste} lignes de plus."]
+        # Une invite identique à la précédente (« >>> », « $ ») n'est pas
+        # répétée après une sortie : seule une invite nouvelle est lue,
+        # c'est elle qui dit ce que le programme attend. Sans aucune
+        # sortie, elle est relue quand même : c'est alors le seul signe
+        # que la ligne envoyée a bien été traitée.
+        fragment = self._fragment_courant
+        if fragment and (not lignes or fragment != self._dernier_fragment_annonce):
+            lignes.append(fragment)
+            self._dernier_fragment_annonce = fragment
+        if not lignes:
+            return
+        texte = " ".join(lignes)
+        self.voix.dire(texte, braille=fragment or lignes[-1])
+
     def definir_repertoire(self, repertoire: str) -> None:
         """Change le répertoire courant et rafraîchit le titre aussitôt,
         que ce soit depuis le dialogue Ctrl+Maj+D ou depuis le pwd
@@ -1317,7 +1491,12 @@ class PanneauSession(wx.Panel):
         fenetre = self.GetTopLevelParent()
         if fenetre.session() is not self:
             return
-        nom = f"{self.nom} (commande en cours)" if self.en_cours else self.nom
+        if self.interactif:
+            nom = f"{self.nom} (session interactive)"
+        elif self.en_cours:
+            nom = f"{self.nom} (commande en cours)"
+        else:
+            nom = self.nom
         segments = [nom]
         if self.repertoire:
             segments.append(self.repertoire)
@@ -1327,7 +1506,8 @@ class PanneauSession(wx.Panel):
             resume = self._commande_en_cours.splitlines()[0].strip()
             if len(resume) > 60:
                 resume = resume[:60].rstrip() + "..."
-            fenetre.SetStatusText(f"Commande en cours : {resume}")
+            etat = "Session interactive" if self.interactif else "Commande en cours"
+            fenetre.SetStatusText(f"{etat} : {resume}")
         else:
             fenetre.SetStatusText("Prêt")
 
@@ -1377,6 +1557,18 @@ class PanneauSession(wx.Panel):
 
     def _commande_terminee(self, commande: str, resultat: Resultat) -> None:
         """Retour dans le thread principal : on peut toucher à l'interface."""
+        if not self:
+            return
+        interactif = self.interactif
+        if interactif:
+            # La zone provisoire laisse la place au bloc définitif, qui
+            # reprend la même transcription.
+            self.interactif = False
+            if self._minuterie_annonce is not None:
+                self._minuterie_annonce.Stop()
+            self._a_annoncer = []
+            self.sortie.Remove(self._debut_zone_interactive, self.sortie.GetLastPosition())
+            self.saisie.SetName(f"Commande, {self.nom}")
         self.en_cours = False
         self.saisie.SetEditable(True)
         self.rafraichir_statut()
@@ -1389,7 +1581,9 @@ class PanneauSession(wx.Panel):
         # et l'annonce s'en servent au moment de la création du bloc.
         self._duree = resultat.duree
         self._interrompue = resultat.interrompue
-        bloc = self.ajouter_bloc(commande, sortie, resultat.code_retour)
+        bloc = self.ajouter_bloc(
+            commande, sortie, resultat.code_retour, interactif=interactif,
+        )
 
         # Un message braille est fugace : il s'efface au bout de quelques
         # secondes. En posant le curseur sur la ligne d'en-tête du bloc,
@@ -1437,7 +1631,9 @@ class PanneauSession(wx.Panel):
 
     # -- blocs -------------------------------------------------------------
 
-    def ajouter_bloc(self, commande: str, sortie: str, code_retour: int) -> Bloc:
+    def ajouter_bloc(
+        self, commande: str, sortie: str, code_retour: int, interactif: bool = False,
+    ) -> Bloc:
         bloc = Bloc(
             numero=len(self.blocs) + 1,
             commande=commande,
@@ -1446,6 +1642,7 @@ class PanneauSession(wx.Panel):
             session=self.nom,
             duree=getattr(self, "_duree", 0.0),
             interrompue=getattr(self, "_interrompue", False),
+            interactif=interactif,
         )
         self._duree, self._interrompue = 0.0, False
         bloc.debut = self.sortie.GetLastPosition()
@@ -3517,6 +3714,11 @@ class Fenetre(wx.Frame):
         self.Bind(wx.EVT_MENU,
                   lambda e: self.interrompre_commande(),
                   m_session.Append(wx.ID_ANY, "&Interrompre la commande  Ctrl+Maj+K"))
+        # Deux espaces et pas de tabulation devant le raccourci, comme
+        # pour Ctrl+Maj : la touche est gérée par sur_touche_saisie.
+        self.Bind(wx.EVT_MENU,
+                  lambda e: self.lancer_interactif(),
+                  m_session.Append(wx.ID_ANY, "&Lancer en session interactive  Ctrl+Entrée"))
         self.Bind(wx.EVT_MENU,
                   lambda e: self.changer_repertoire(),
                   m_session.Append(wx.ID_ANY, "Changer de &répertoire  Ctrl+Maj+D"))
@@ -4058,6 +4260,13 @@ class Fenetre(wx.Frame):
         panneau = self.session()
         if panneau is not None:
             panneau.interrompre()
+
+    def lancer_interactif(self):
+        panneau = self.session()
+        if panneau is None or panneau.mode_navigation:
+            return
+        panneau.envoyer(interactif=True)
+        panneau.saisie.SetFocus()
 
     def changer_repertoire(self):
         panneau = self.session()
