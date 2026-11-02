@@ -81,7 +81,15 @@ LONGUEUR_COMMANDE_ENTETE = 60  # au-delà, la commande est tronquée
 
 # Une invite reconnue comme mot de passe masque la saisie : elle n'a pas
 # besoin d'être vue, et le braille ne devrait pas l'afficher en clair.
-MOTIF_MOT_DE_PASSE = re.compile(r"password|mot de passe|passphrase", re.IGNORECASE)
+MOTIF_MOT_DE_PASSE = re.compile(
+    r"password|mot de passe|passphrase|passcode|\[sudo\]|phrase secrète",
+    re.IGNORECASE,
+)
+
+# Remplace un secret envoyé en session interactive s'il réapparaît dans la
+# sortie (un programme qui n'aurait pas coupé l'écho) : ni affiché, ni lu,
+# ni copié dans le bloc.
+MASQUE_SECRET = "(masqué)"
 
 # Taille de police : bornes larges, pensées pour un usage malvoyant, pas
 # seulement pour un confort de lecture ordinaire.
@@ -1044,6 +1052,13 @@ class PanneauSession(wx.Panel):
         self._dernier_fragment_annonce = ""
         self._premiere_attente = 0.0
         self._minuterie_annonce: wx.CallLater | None = None
+        # Secrets envoyés pendant la session interactive en cours, gardés
+        # en mémoire seulement le temps de la session pour les masquer
+        # s'ils réapparaissent dans la sortie (voir _masquer_secrets).
+        self._secrets: list[str] = []
+        # Dernière invite de mot de passe pour laquelle la boîte masquée a
+        # déjà été ouverte : évite de la rouvrir à chaque paquet reçu.
+        self._invite_secret_traitee = ""
         # Mode navigation (SSH seulement) : bascule saisie+sortie contre un
         # navigateur SFTP. self.repertoire sert de chemin courant aux deux
         # modes, pour que l'un reprenne où l'autre s'est arrêté.
@@ -1497,6 +1512,8 @@ class PanneauSession(wx.Panel):
         self._a_annoncer = []
         self._fragment_courant = ""
         self._dernier_fragment_annonce = ""
+        self._secrets = []
+        self._invite_secret_traitee = ""
         self.saisie.SetName(f"Saisie interactive, {self.nom}")
         self.rafraichir_statut()
 
@@ -1534,6 +1551,13 @@ class PanneauSession(wx.Panel):
         apparaître deux fois."""
         if not self or not self.interactif:
             return
+        lignes = [self._masquer_secrets(l) for l in lignes]
+        fragment = self._masquer_secrets(fragment)
+        if lignes:
+            # Une nouvelle ligne terminée clôt l'invite précédente : une
+            # même invite qui revient ensuite (« Sorry, try again. » puis
+            # de nouveau « Password: ») rouvrira bien la boîte masquée.
+            self._invite_secret_traitee = ""
         fin = self.sortie.GetLastPosition()
         if fin > self._debut_fragment:
             self.sortie.Remove(self._debut_fragment, fin)
@@ -1587,6 +1611,20 @@ class PanneauSession(wx.Panel):
         # sortie, elle est relue quand même : c'est alors le seul signe
         # que la ligne envoyée a bien été traitée.
         fragment = self._fragment_courant
+        if (
+            fragment and MOTIF_MOT_DE_PASSE.search(fragment)
+            and fragment != self._invite_secret_traitee
+        ):
+            # Invite de mot de passe : la boîte masquée porte l'invite
+            # elle-même, NVDA la lit à l'ouverture. Rien à taper dans la
+            # saisie normale, où le texte serait visible et lu.
+            self._invite_secret_traitee = fragment
+            self._dernier_fragment_annonce = fragment
+            texte = " ".join(m for m in morceaux if m)
+            if texte:
+                self.voix.dire(texte)
+            wx.CallAfter(self.saisir_secret, fragment)
+            return
         if fragment and (not lignes or fragment != self._dernier_fragment_annonce):
             morceaux.append(fragment)
             self._dernier_fragment_annonce = fragment
@@ -1594,6 +1632,52 @@ class PanneauSession(wx.Panel):
         if not texte:
             return
         self.voix.dire(texte, braille=fragment or (lignes[-1] if lignes else texte))
+
+    def saisir_secret(self, invite: str | None = None) -> None:
+        """Boîte masquée pour envoyer un mot de passe pendant une session
+        interactive : ouverte d'elle-même sur une invite reconnue, ou à
+        la demande (Ctrl+Maj+P) quand la détection n'a rien vu. Le texte
+        n'est ni affiché, ni lu, ni mis dans l'historique ou le journal."""
+        if not self:
+            return
+        if not self.interactif:
+            self.voix.dire("Aucune session interactive en cours.", interrompre=True)
+            return
+        if self._invite_boite is not None:
+            return
+        boite = wx.TextEntryDialog(
+            self, invite or "Texte à envoyer sans écho :",
+            f"Saisie masquée — {self.nom}",
+            style=wx.OK | wx.CANCEL | wx.CENTRE | wx.TE_PASSWORD,
+        )
+        self._invite_boite = boite
+        code = boite.ShowModal()
+        secret = boite.GetValue() if code == wx.ID_OK else None
+        boite.Destroy()
+        self._invite_boite = None
+        # La session a pu se terminer (ou être interrompue) pendant que la
+        # boîte était ouverte : plus rien à qui envoyer.
+        if not self or not self.interactif:
+            return
+        self.saisie.SetFocus()
+        if secret is None:
+            self.voix.dire(
+                "Saisie annulée, rien n'a été envoyé. Ctrl+Maj+P pour recommencer.",
+                interrompre=True,
+            )
+            return
+        self._secrets.append(secret)
+        self._echo_attendu = None
+        if not self.executeur.envoyer_saisie(secret + "\r"):
+            self.voix.dire("Envoi impossible.", interrompre=True)
+
+    def _masquer_secrets(self, texte: str) -> str:
+        # En dessous de 3 caractères, un « secret » se retrouverait dans
+        # trop de mots ordinaires pour être masqué sans tout abîmer.
+        for secret in self._secrets:
+            if len(secret) >= 3:
+                texte = texte.replace(secret, MASQUE_SECRET)
+        return texte
 
     def definir_repertoire(self, repertoire: str) -> None:
         """Change le répertoire courant et rafraîchit le titre aussitôt,
@@ -1695,8 +1779,12 @@ class PanneauSession(wx.Panel):
             if self._minuterie_annonce is not None:
                 self._minuterie_annonce.Stop()
             self._a_annoncer = []
+            if self._invite_boite is not None:
+                self._invite_boite.EndModal(wx.ID_CANCEL)
             self.sortie.Remove(self._debut_zone_interactive, self.sortie.GetLastPosition())
             self.saisie.SetName(f"Commande, {self.nom}")
+            resultat.sortie = self._masquer_secrets(resultat.sortie)
+            self._secrets = []
         self.en_cours = False
         self.saisie.SetEditable(True)
         self.rafraichir_statut()
@@ -3872,6 +3960,9 @@ class Fenetre(wx.Frame):
                   lambda e: self.lancer_interactif(),
                   m_session.Append(wx.ID_ANY, "&Lancer en session interactive  Ctrl+Entrée"))
         self.Bind(wx.EVT_MENU,
+                  lambda e: self.saisir_secret(),
+                  m_session.Append(wx.ID_ANY, "Saisir un &mot de passe…  Ctrl+Maj+P"))
+        self.Bind(wx.EVT_MENU,
                   lambda e: self.changer_repertoire(),
                   m_session.Append(wx.ID_ANY, "Changer de &répertoire  Ctrl+Maj+D"))
 
@@ -4420,6 +4511,11 @@ class Fenetre(wx.Frame):
         panneau.envoyer(interactif=True)
         panneau.saisie.SetFocus()
 
+    def saisir_secret(self):
+        panneau = self.session()
+        if panneau is not None:
+            panneau.saisir_secret()
+
     def changer_repertoire(self):
         panneau = self.session()
         if panneau is None:
@@ -4775,6 +4871,10 @@ class Fenetre(wx.Frame):
 
         if ctrl and maj and code == ord("D"):
             self.changer_repertoire()
+            return
+
+        if ctrl and maj and code == ord("P"):
+            self.saisir_secret()
             return
 
         if ctrl and maj and code == ord("U"):
