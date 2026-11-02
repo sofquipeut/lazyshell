@@ -1595,16 +1595,23 @@ class PanneauSession(wx.Panel):
             DELAI_ANNONCE_INTERACTIVE, self._annoncer_interactif
         )
 
-    def _annoncer_interactif(self) -> None:
-        if not self:
-            return
+    def _prendre_lignes_a_annoncer(self) -> tuple[list[str], str]:
+        """Vide les lignes en attente d'annonce et les rend prêtes à lire :
+        les lignes gardées, et le texte ponctué correspondant."""
         lignes = self._a_annoncer
         self._a_annoncer = []
         suite = ""
         if len(lignes) > SEUIL_LECTURE_INTEGRALE:
             suite = f"Et {len(lignes) - LIGNES_APERCU} lignes de plus."
             lignes = lignes[:LIGNES_APERCU]
-        morceaux = [_ponctuer_pour_la_voix(lignes), suite]
+        texte = " ".join(m for m in (_ponctuer_pour_la_voix(lignes), suite) if m)
+        return lignes, texte
+
+    def _annoncer_interactif(self) -> None:
+        if not self:
+            return
+        lignes, texte_lignes = self._prendre_lignes_a_annoncer()
+        morceaux = [texte_lignes]
         # Une invite identique à la précédente (« >>> », « $ ») n'est pas
         # répétée après une sortie : seule une invite nouvelle est lue,
         # c'est elle qui dit ce que le programme attend. Sans aucune
@@ -1772,13 +1779,16 @@ class PanneauSession(wx.Panel):
         if not self:
             return
         interactif = self.interactif
+        dernieres_lignes = ""
         if interactif:
             # La zone provisoire laisse la place au bloc définitif, qui
             # reprend la même transcription.
             self.interactif = False
             if self._minuterie_annonce is not None:
                 self._minuterie_annonce.Stop()
-            self._a_annoncer = []
+            # Dernière sortie pas encore lue (un programme qui écrit puis
+            # s'arrête aussitôt) : sans ça, l'annonce de fin l'effacerait.
+            _, dernieres_lignes = self._prendre_lignes_a_annoncer()
             if self._invite_boite is not None:
                 self._invite_boite.EndModal(wx.ID_CANCEL)
             self.sortie.Remove(self._debut_zone_interactive, self.sortie.GetLastPosition())
@@ -1800,6 +1810,11 @@ class PanneauSession(wx.Panel):
         bloc = self.ajouter_bloc(
             commande, sortie, resultat.code_retour, interactif=interactif,
         )
+        # Lue après le statut de fin, jamais avant (règle du statut en
+        # premier), et sans l'interrompre.
+        if dernieres_lignes:
+            # braille vide : l'afficheur garde le statut de fin.
+            self.voix.dire(dernieres_lignes, braille="")
 
         # Un message braille est fugace : il s'efface au bout de quelques
         # secondes. En posant le curseur sur la ligne d'en-tête du bloc,
