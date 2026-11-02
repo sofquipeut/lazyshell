@@ -127,6 +127,9 @@ class Resultat:
     duree: float
     tronquee: bool = False
     interrompue: bool = False
+    # Session interactive arrêtée parce que le programme a demandé un
+    # affichage plein écran (vim, htop...), non pris en charge.
+    plein_ecran: bool = False
 
 
 class ExecuteurLocal:

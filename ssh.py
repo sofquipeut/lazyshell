@@ -58,6 +58,13 @@ HAUTEUR_PTY = 50
 # terminal_ligne.py, qui reste le filet de sécurité pour les autres).
 TYPE_TERMINAL = "dumb"
 
+# Avec un pseudo-terminal, git log, man, systemctl status ou journalctl
+# ouvrent un pager (less) qui attend des touches page par page. cat à la
+# place : tout le texte arrive d'un coup, lisible ligne par ligne.
+PRELUDE_INTERACTIF = (
+    "export PAGER=cat GIT_PAGER=cat MANPAGER=cat SYSTEMD_PAGER=cat\n"
+)
+
 # Nom de service utilisé dans le Gestionnaire d'identifiants Windows.
 # Aucun mot de passe ni passphrase n'est jamais écrit en clair dans un
 # fichier : seuls les champs non secrets d'un profil (hôte, port,
@@ -977,6 +984,7 @@ class ExecuteurSSH:
         commande_finale = commande
         if repertoire:
             commande_finale = f"cd {shlex.quote(repertoire)} || exit 1\n{commande}"
+        commande_finale = PRELUDE_INTERACTIF + commande_finale
         logging.info("Exécution SSH interactive : %s", commande)
 
         try:
@@ -1022,6 +1030,12 @@ class ExecuteurSSH:
                     lignes.append(f"[Sortie tronquée : plus de {MAX_LIGNES} lignes.]")
             if sur_sortie is not None:
                 sur_sortie(nouvelles, nettoyeur.fragment)
+            if nettoyeur.plein_ecran:
+                # Écran alternatif demandé : rien de ce qui suivrait ne
+                # serait lisible ligne par ligne. Fermer le canal envoie
+                # SIGHUP au programme distant, qui s'arrête.
+                logging.info("Programme plein écran détecté, session fermée.")
+                break
 
         reste = nettoyeur.vider()
         if reste:
@@ -1030,8 +1044,9 @@ class ExecuteurSSH:
                 sur_sortie([reste], "")
 
         interrompue = getattr(canal, "_interrompue", False)
+        plein_ecran = nettoyeur.plein_ecran
         try:
-            code = -1 if interrompue else canal.recv_exit_status()
+            code = -1 if interrompue or plein_ecran else canal.recv_exit_status()
         except Exception:
             code = -1
         canal.close()
@@ -1049,6 +1064,7 @@ class ExecuteurSSH:
             duree=duree,
             tronquee=tronquee,
             interrompue=interrompue,
+            plein_ecran=plein_ecran,
         )
 
     def envoyer_saisie(self, texte: str) -> bool:

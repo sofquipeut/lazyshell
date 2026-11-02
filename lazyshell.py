@@ -75,6 +75,9 @@ LIGNES_ERREUR = 15             # sur code de retour non nul
 # Session interactive : délai de regroupement des paquets reçus en une
 # seule annonce, en millisecondes (voir PanneauSession._planifier_annonce).
 DELAI_ANNONCE_INTERACTIVE = 300
+# Session interactive : un second Ctrl+Maj+K dans ce délai (en secondes)
+# après le Ctrl+C envoyé par le premier ferme la session.
+DELAI_SECONDE_INTERRUPTION = 3.0
 SEUIL_DUREE_ANNONCEE = 3.0     # en deçà, la durée n'est pas mentionnée
 LONGUEUR_COMMANDE_ENTETE = 60  # au-delà, la commande est tronquée
                                # dans l'en-tête et rappelée en entier
@@ -619,6 +622,49 @@ def _commande_interactive_connue(commande: str) -> bool:
     return False
 
 
+# Programmes plein écran, refusés avant même d'être lancés : ils dessinent
+# un écran entier, illisible ligne par ligne, et attendent des touches
+# (flèches, Échap...) que la saisie ligne par ligne ne sait pas envoyer.
+# Le mode interactif les repère aussi en cours de route (écran alternatif,
+# voir terminal_ligne.py) ; cette liste évite simplement de les lancer.
+PROGRAMMES_PLEIN_ECRAN = {
+    "vi", "vim", "nvim", "view", "vimdiff", "nano", "pico", "emacs", "joe",
+    "mcedit", "mc", "htop", "btop", "top", "atop", "iotop", "nmtui",
+    "tmux", "screen", "watch", "ranger", "ncdu", "alsamixer",
+}
+# Pagers : sans terminal (mode normal) ils se contentent d'afficher tout
+# le texte, comme cat. Refusés seulement en session interactive.
+PAGERS = {"less", "more", "most"}
+
+MESSAGE_PLEIN_ECRAN = (
+    "Programme plein écran non pris en charge. Pour modifier un fichier "
+    "distant, utilisez le mode navigation, Ctrl+Maj+F, puis Entrée sur le "
+    "fichier."
+)
+
+
+def _programme_plein_ecran(commande: str, interactif: bool) -> str | None:
+    """Nom du programme plein écran que lance cette commande, ou None."""
+    ligne = commande.strip()
+    if "\n" in ligne or re.search(r"[;&|]", ligne):
+        return None
+    try:
+        mots = shlex.split(ligne)
+    except ValueError:
+        return None
+    if mots and mots[0] == "sudo":
+        mots = mots[1:]
+    if not mots:
+        return None
+    programme, arguments = mots[0].rsplit("/", 1)[-1], mots[1:]
+    # top -b : mode « batch », une simple sortie texte.
+    if programme == "top" and "-b" in arguments:
+        return None
+    if programme in PROGRAMMES_PLEIN_ECRAN or (interactif and programme in PAGERS):
+        return programme
+    return None
+
+
 # Messages d'un programme qui a refusé de démarrer faute de terminal, en
 # mode normal (sans pseudo-terminal) : _commande_terminee propose alors
 # de la relancer en session interactive. La commande a échoué sans rien
@@ -1059,6 +1105,8 @@ class PanneauSession(wx.Panel):
         # Dernière invite de mot de passe pour laquelle la boîte masquée a
         # déjà été ouverte : évite de la rouvrir à chaque paquet reçu.
         self._invite_secret_traitee = ""
+        # Instant du dernier Ctrl+C envoyé par Ctrl+Maj+K (voir interrompre).
+        self._instant_ctrl_c = 0.0
         # Mode navigation (SSH seulement) : bascule saisie+sortie contre un
         # navigateur SFTP. self.repertoire sert de chemin courant aux deux
         # modes, pour que l'un reprenne où l'autre s'est arrêté.
@@ -1174,16 +1222,26 @@ class PanneauSession(wx.Panel):
                 interrompre=True,
             )
             return
-        self.saisie.SetValue("")
-        self.historique.append(commande)
-        self.index_historique = len(self.historique)
-        self._brouillons.clear()
         # Entrée seule sur une commande connue pour attendre un terminal
         # (python3 seul, docker exec -it...) : session interactive
         # d'office, plutôt qu'un échec à rattraper ensuite.
         automatique = (
             not interactif and self.distant and _commande_interactive_connue(commande)
         )
+        programme = _programme_plein_ecran(commande, interactif or automatique)
+        if programme is not None:
+            # Même modèle que le blocage du cd ci-dessus : annoncer, ne
+            # rien envoyer, laisser la saisie telle quelle.
+            self.voix.dire(
+                f"{programme} : {MESSAGE_PLEIN_ECRAN} Commande non envoyée.",
+                braille=f"{programme} : plein écran non pris en charge",
+                interrompre=True,
+            )
+            return
+        self.saisie.SetValue("")
+        self.historique.append(commande)
+        self.index_historique = len(self.historique)
+        self._brouillons.clear()
         if interactif or automatique:
             self.executer_interactif(commande, automatique=automatique)
         else:
@@ -1194,6 +1252,17 @@ class PanneauSession(wx.Panel):
         programme, même vide (une simple validation est une réponse
         valable à beaucoup d'invites)."""
         ligne = self.saisie.GetValue()
+        # vim tapé dans un shell interactif : refusé ici plutôt que de
+        # laisser la détection de l'écran alternatif fermer toute la
+        # session, shell compris.
+        programme = _programme_plein_ecran(ligne, interactif=True)
+        if programme is not None:
+            self.voix.dire(
+                f"{programme} : {MESSAGE_PLEIN_ECRAN} Ligne non envoyée.",
+                braille=f"{programme} : plein écran non pris en charge",
+                interrompre=True,
+            )
+            return
         self.saisie.SetValue("")
         if ligne.strip():
             self.historique.append(ligne)
@@ -1514,6 +1583,7 @@ class PanneauSession(wx.Panel):
         self._dernier_fragment_annonce = ""
         self._secrets = []
         self._invite_secret_traitee = ""
+        self._instant_ctrl_c = 0.0
         self.saisie.SetName(f"Saisie interactive, {self.nom}")
         self.rafraichir_statut()
 
@@ -1807,12 +1877,18 @@ class PanneauSession(wx.Panel):
         # et l'annonce s'en servent au moment de la création du bloc.
         self._duree = resultat.duree
         self._interrompue = resultat.interrompue
+        if resultat.plein_ecran:
+            sortie = (sortie + "\n" if sortie else "") + f"[{MESSAGE_PLEIN_ECRAN}]"
         bloc = self.ajouter_bloc(
             commande, sortie, resultat.code_retour, interactif=interactif,
         )
+        if resultat.plein_ecran:
+            # Ce qui précède le refus n'est que le début d'un dessin
+            # d'écran, sans intérêt à lire : seule l'explication compte.
+            self.voix.dire(MESSAGE_PLEIN_ECRAN, interrompre=True)
         # Lue après le statut de fin, jamais avant (règle du statut en
         # premier), et sans l'interrompre.
-        if dernieres_lignes:
+        elif dernieres_lignes:
             # braille vide : l'afficheur garde le statut de fin.
             self.voix.dire(dernieres_lignes, braille="")
 
@@ -1876,6 +1952,24 @@ class PanneauSession(wx.Panel):
         if not self.en_cours:
             self.voix.dire("Aucune commande en cours.", interrompre=True)
             return
+        # Session interactive : un premier Ctrl+Maj+K envoie Ctrl+C au
+        # programme, comme dans un vrai terminal (arrête la commande en
+        # cours dans un shell ou un REPL sans quitter la session). Un
+        # second, peu après, ferme la session pour de bon : le recours
+        # quand le programme ignore Ctrl+C.
+        maintenant = time.monotonic()
+        if (
+            self.interactif
+            and maintenant - self._instant_ctrl_c > DELAI_SECONDE_INTERRUPTION
+        ):
+            self._instant_ctrl_c = maintenant
+            if self.executeur.envoyer_saisie("\x03"):
+                self.voix.dire(
+                    "Ctrl+C envoyé. Ctrl+Maj+K de nouveau pour fermer la session.",
+                    braille="Ctrl+C envoyé",
+                    interrompre=True,
+                )
+                return
         self.voix.dire("Interruption demandée.", interrompre=True)
         # Une invite en attente laisserait sinon l'utilisateur bloqué sur
         # une boîte de dialogue orpheline pendant que le processus est tué.
