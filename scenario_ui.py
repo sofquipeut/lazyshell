@@ -158,8 +158,12 @@ class DialogueVerdict(wx.Dialog):
         self._copier = copier
         self._voix = voix
 
-        texte_message = wx.StaticText(self, label=message)
-        texte_message.Wrap(520)
+        # Message facultatif : quand le titre dit déjà tout, une ligne de
+        # plus ne ferait que rallonger ce que NVDA lit à l'ouverture.
+        texte_message = None
+        if message:
+            texte_message = wx.StaticText(self, label=message)
+            texte_message.Wrap(520)
 
         # Créés avant le champ de sortie : l'ordre de tabulation suit
         # l'ordre de création, la première option est à une touche.
@@ -187,8 +191,9 @@ class DialogueVerdict(wx.Dialog):
         self.champ_sortie.SetMinSize((520, 160))
 
         boite = wx.BoxSizer(wx.VERTICAL)
-        boite.Add(texte_message, 0, wx.ALL, 10)
-        boite.Add(boutons, 0, wx.LEFT | wx.RIGHT, 10)
+        if texte_message is not None:
+            boite.Add(texte_message, 0, wx.ALL, 10)
+        boite.Add(boutons, 0, wx.ALL if texte_message is None else wx.LEFT | wx.RIGHT, 10)
         boite.Add(texte_etiquette, 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
         boite.Add(self.champ_sortie, 1, wx.EXPAND | wx.ALL, 10)
         self.SetSizerAndFit(boite)
@@ -456,7 +461,7 @@ class ExecutionScenario:
             )
             self.journal.ecrire("Simulation : rien n'est exécuté.")
             self.bilan.append(f"{libelle}, {etape.titre} : simulation")
-            self._precedente = f"{libelle}, {etape.titre} : simulation, rien n'a été exécuté."
+            self._precedente = "Simulé"
             return BON
 
         if etape.destructive and commande:
@@ -503,7 +508,7 @@ class ExecutionScenario:
             self._journaliser_sortie(etape, sortie)
             self.journal.ecrire("Verdict : interrompue")
             self.bilan.append(f"{libelle}, {etape.titre} : interrompue")
-            self._precedente = f"{libelle}, {etape.titre} : interrompue."
+            self._precedente = "Interrompue"
             return ARRETER
 
         verdict = PROBLEME if problemes else BON
@@ -531,7 +536,7 @@ class ExecutionScenario:
             self.bip(not problemes)
         if not problemes:
             self.nb_bonnes += 1
-            self._precedente = f"{libelle}, {etape.titre} : {BON}."
+            self._precedente = BON
             if not self.pas_a_pas:
                 # Sans interrompre : la lecture de la commande, si elle
                 # n'est pas finie, se termine avant le verdict.
@@ -550,7 +555,14 @@ class ExecutionScenario:
         if choix is None:
             choix = ARRETER
         self.journal.evenement(f"Choix : {self._nom_choix(choix)}")
-        self._precedente = f"{libelle}, {etape.titre} : {PROBLEME}, choix {self._nom_choix(choix)}."
+        if choix == REESSAYER:
+            self._precedente = "Nouvel essai"
+        elif choix == CONTINUER:
+            self._precedente = "Problème passé"
+        elif isinstance(choix, tuple):
+            self._precedente = "Problème, alternative"
+        else:
+            self._precedente = PROBLEME
         return choix
 
     def _journaliser_sortie(self, etape, sortie: str) -> None:
@@ -606,16 +618,19 @@ class ExecutionScenario:
     def _avant_etape(self, libelle: str, etape, commande: str, question: str):
         """Pas à pas : présente l'étape qui va être jouée. Renvoie BON pour
         la lancer, ARRETER sinon."""
-        morceaux = []
-        if self._precedente:
-            morceaux.append(f"Précédente : {self._precedente}")
-        else:
-            mode = "Simulation" if self.simulation else "Scénario"
-            morceaux.append(f"{mode} {self.scenario.nom}, {len(self.sequence)} étapes.")
-        suivante = f"Suivante : {libelle}, {etape.titre}."
+        # Tout tient dans le titre, statut de l'étape précédente en tête
+        # (un mot) : c'est la seule chose lue à l'ouverture avec le bouton.
+        # Le nom de l'étape précédente n'est pas répété, on vient de
+        # l'entendre.
+        titre = f"{libelle}, {etape.titre}"
         if etape.destructive:
-            suivante += " Étape destructive."
-        morceaux.append(suivante)
+            titre += ", destructive"
+        if self._precedente:
+            titre = f"{self._precedente}. {titre}"
+        message = ""
+        if not self._precedente:
+            mode = "Simulation" if self.simulation else "Scénario"
+            message = f"{mode} {self.scenario.nom}, {len(self.sequence)} étapes."
         if commande:
             contenu = commande
             etiquette = (
@@ -626,8 +641,8 @@ class ExecutionScenario:
             contenu, etiquette = question, "&Question :"
         boite = DialogueVerdict(
             self.panneau.GetTopLevelParent(),
-            f"{libelle}, {etape.titre}",
-            "\n".join(morceaux),
+            titre,
+            message,
             contenu,
             [(BON, "&Continuer"), (ARRETER, "&Arrêter le scénario")],
             None, self.copier, self.voix, etiquette_sortie=etiquette,
@@ -682,11 +697,9 @@ class ExecutionScenario:
         # Une boîte plutôt qu'une annonce vocale, qui se faisait couper
         # (seul le braille restait) : NVDA la lit lui-même, et elle reste
         # là tant qu'on n'a pas validé.
-        mode = "Simulation" if self.simulation else "Scénario"
+        # Le titre porte déjà la conclusion : le message ne garde que le
+        # décompte et le journal.
         morceaux = []
-        if self._precedente:
-            morceaux.append(f"Dernière étape jouée : {self._precedente}")
-        morceaux.append(f"{mode} {self.scenario.nom} : {conclusion}.")
         if not self.simulation:
             bonnes = self.nb_bonnes
             morceaux.append(
