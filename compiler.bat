@@ -31,6 +31,8 @@ if exist "dist\LazyShell" (
     for %%F in (settings.json ssh_profiles.json known_hosts commands.json) do (
         if exist "dist\LazyShell\%%F" copy /y "dist\LazyShell\%%F" "%SAUVEGARDE%\%%F" >nul
     )
+    rem Scenarios de l'utilisateur, avec leurs journaux.
+    if exist "dist\LazyShell\scenarios" xcopy "dist\LazyShell\scenarios" "%SAUVEGARDE%\scenarios" /e /i /y >nul
 )
 
 "venv\Scripts\python.exe" -m PyInstaller ^
@@ -57,10 +59,17 @@ rem l'appli (Fenetre.ouvrir_documentation) : doit vivre a cote de l'exe,
 rem comme la DLL, pour etre presente dans l'archive telechargee.
 if exist "docs" xcopy "docs" "dist\LazyShell\docs" /e /i /y >nul
 
+rem Scenario d'exemple, seul scenario versionne (les autres decrivent des
+rem serveurs reels). Copie avant la restauration ci-dessous : une version
+rem modifiee par l'utilisateur garde la priorite.
+if not exist "dist\LazyShell\scenarios" mkdir "dist\LazyShell\scenarios"
+if exist "scenarios\exemple.toml" copy /y "scenarios\exemple.toml" "dist\LazyShell\scenarios\exemple.toml" >nul
+
 if exist "%SAUVEGARDE%" (
     for %%F in (settings.json ssh_profiles.json known_hosts commands.json) do (
         if exist "%SAUVEGARDE%\%%F" copy /y "%SAUVEGARDE%\%%F" "dist\LazyShell\%%F" >nul
     )
+    if exist "%SAUVEGARDE%\scenarios" xcopy "%SAUVEGARDE%\scenarios" "dist\LazyShell\scenarios" /e /i /y >nul
     rmdir /s /q "%SAUVEGARDE%"
 )
 

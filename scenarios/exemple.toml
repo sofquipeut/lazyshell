@@ -1,0 +1,84 @@
+# Scénario d'exemple : sans aucun effet, il tourne dans n'importe quelle
+# session, locale ou SSH (echo existe dans PowerShell comme dans bash).
+# Il montre chaque champ possible. Pour l'essayer : menu Scénarios,
+# Lancer un scénario (Ctrl+Maj+Q).
+#
+# Un fichier de scénario contient :
+#   nom          le nom annoncé au lancement ;
+#   description  facultatif ;
+#   profil       facultatif, le nom du profil SSH exigé. Le scénario
+#                refuse alors de tourner ailleurs (sauf en simulation) ;
+#   [variables]  des valeurs réutilisées dans les commandes, écrites
+#                {{nom}}. {{date}} (AAAAMMJJ, figée au lancement) existe
+#                toujours ;
+#   [[etape]]    une étape, autant de fois que nécessaire.
+#
+# Une commande se met entre trois apostrophes : on la recopie telle
+# quelle, guillemets et apostrophes compris, sans rien échapper.
+
+nom = "Exemple sans effet"
+description = "Montre le fonctionnement des scénarios, sans rien modifier."
+
+[variables]
+salut = "bonjour"
+marque = "exemple-{{date}}"
+
+[[etape]]
+id = "salut"
+titre = "Dire bonjour"
+commande = '''echo {{salut}}'''
+# Ce qu'on attend de la sortie. Tous les champs sont facultatifs :
+#   code             code de retour accepté, un nombre ou une liste
+#                    (0 par défaut) ;
+#   contient         texte, ou liste de textes, qui doivent apparaître ;
+#   interdit         texte, ou liste de textes, qui ne doivent pas apparaître ;
+#   motif            expression régulière qui doit être trouvée ;
+#   nombre_min       avec motif : nombre minimal de fois (1 par défaut) ;
+#   nombre_max       avec motif : nombre maximal de fois ;
+#   respecter_casse  false par défaut : majuscules et minuscules confondues.
+attendu = { code = 0, contient = "bonjour" }
+
+[[etape]]
+id = "marque"
+titre = "Afficher la marque du jour"
+commande = '''echo {{marque}}'''
+attendu = { motif = 'exemple-\d{8}' }
+
+[[etape]]
+id = "essai-destructif"
+titre = "Étape marquée destructive, sans effet réel"
+commande = '''echo rien-de-supprime'''
+# destructive = true : une confirmation est demandée avant d'exécuter.
+destructive = true
+attendu = { contient = "rien-de-supprime" }
+
+[[etape]]
+id = "controle"
+titre = "Contrôle à faire échouer pour essayer"
+commande = '''echo tout-va-bien'''
+# Pour voir la boîte de problème : remplacez tout-va-bien par autre
+# chose dans contient, ou ajoutez interdit = "tout".
+attendu = { contient = "tout-va-bien" }
+# Ce qui est proposé si l'étape pose problème. Arrêter et Copier le
+# rapport sont toujours proposés. Possibles : "reessayer",
+# "continuer" (passer quand même à la suite), et
+# { alternative = "id" } pour passer à une étape de rechange.
+si_echec = ["reessayer", { alternative = "rattrapage" }, "continuer"]
+
+[[etape]]
+id = "rattrapage"
+titre = "Étape de rechange"
+commande = '''echo rattrapage'''
+attendu = { contient = "rattrapage" }
+# hors_sequence = true : jamais jouée dans l'ordre normal, seulement
+# comme alternative. Si elle est bonne, on reprend là où serait allée
+# l'étape qu'elle remplace.
+hors_sequence = true
+
+[[etape]]
+id = "question"
+titre = "Contrôle manuel"
+# Une question à la place d'une commande : Oui vaut Bon, Non vaut
+# Problème.
+question = "Avez-vous bien entendu chaque verdict ?"
+si_echec = ["reessayer", "continuer"]

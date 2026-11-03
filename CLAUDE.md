@@ -1450,6 +1450,32 @@ L'environnement Python est dans `venv`. Utiliser
   blocage du `cd` (signalé à l'usage : Flèche bas ne retrouvait pas une
   saisie vide).
 
+- **Scénarios (branche `scenarios`), palier 1 sur 5 : moteur et
+  contrôles de fin Hermes, en lecture seule.** Procédures guidées pas à
+  pas, décrites en TOML (`tomllib`, inclus dans Python : aucune
+  dépendance ; commentaires possibles ; commande recopiée telle quelle
+  entre trois apostrophes). `scenario.py` (sans wx : chargement et
+  validation complète au chargement, contrôle `attendu`, journal,
+  rapport) et `scenario_ui.py` (boîtes, enchaînement dans un thread de
+  fond qui repasse par `wx.CallAfter` à chaque besoin d'interface).
+  `scenario_ui` n'importe jamais `lazyshell` (qui tourne en `__main__`) :
+  `Fenetre.lancer_scenario` lui passe ce dont il a besoin. Dans
+  `lazyshell.py`, seulement : `Bloc.etiquette` (remplace la commande dans
+  l'en-tête, sinon toutes les étapes `docker exec -u ...` auraient le même),
+  `ajouter_bloc(..., annoncer=False)` (le scénario donne son propre
+  verdict, statut en premier), `PanneauSession.scenario`, arrêt par
+  Ctrl+Maj+K dans `interrompre`, menu Scénarios (Ctrl+Maj+Q). Variables
+  `{{nom}}`, minuscules seules : les gabarits docker `{{.Id}}` passent
+  intacts. Scénarios, journaux et (plus tard) état de reprise dans
+  `scenarios\` à côté de l'exe, sauvegardés par `compiler.bat` ; seul
+  `exemple.toml` est versionné, les autres décrivent un vrai serveur.
+  Vérifié par des scripts jetables (session locale wx réelle, boîtes
+  simulées) : simulation sans aucune exécution, verdicts, confirmation
+  destructive acceptée et refusée, alternative, arrêt par Ctrl+Maj+K en
+  cours de commande. Reste à vérifier au clavier avec NVDA sur le VPS.
+  Paliers suivants : mémorisation de valeurs et reprise, sauvegarde,
+  mise à jour, retour arrière (jamais enchaîné seul), documentation.
+
 ## Idées à reprendre plus tard
 
 Notées en passant, pas encore faites — pas de quoi se précipiter dessus

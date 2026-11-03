@@ -712,6 +712,10 @@ class Bloc:
     # Session interactive (Ctrl+Entrée) : la sortie est la transcription
     # complète de l'échange, déjà entendue au fil de l'eau.
     interactif: bool = False
+    # Étape de scénario : « Étape 3 sur 12, titre, Bon » remplace la
+    # commande dans l'en-tête. Sans ça, toutes les étapes commençant par
+    # le même « docker exec -u ... » auraient un en-tête identique.
+    etiquette: str = ""
 
     @property
     def nb_lignes(self) -> int:
@@ -737,7 +741,7 @@ class Bloc:
         )
         if len(commande) > LONGUEUR_COMMANDE_ENTETE:
             commande = commande[:LONGUEUR_COMMANDE_ENTETE].rstrip() + "..."
-        morceaux.append(commande)
+        morceaux.append(self.etiquette or commande)
         if self.interactif:
             morceaux.append("interactif")
 
@@ -758,12 +762,16 @@ class Bloc:
         """Texte inséré dans le champ de sortie. Aucun caractère décoratif :
         une ligne de tirets est illisible en vocal comme en braille."""
         morceaux = [self.entete(avec_heure)]
+        if self.etiquette:
+            # La commande n'est pas dans l'en-tête : on la donne juste
+            # en dessous, en entier.
+            morceaux.append(f"Commande : {self.commande}")
         # Seule une commande multiligne perd de l'information réelle en
         # entête (les retours à la ligne, repliés en « ; »). Une commande
         # longue mais sur une seule ligne n'y perd rien de structurel :
         # la répéter en entier ici ne ferait que doubler ce qui vient
         # d'être dit, avant même d'atteindre la sortie.
-        if "\n" in self.commande.strip():
+        elif "\n" in self.commande.strip():
             morceaux.append(f"Commande complète :\n{self.commande}")
         if self.sortie:
             morceaux.append(self.sortie.rstrip("\n"))
@@ -795,7 +803,7 @@ class Bloc:
             etat = "ok"
         else:
             etat = libelle_signal(self.code_retour) or f"erreur {self.code_retour}"
-        commande = " ; ".join(
+        commande = self.etiquette or " ; ".join(
             ligne.strip() for ligne in self.commande.splitlines() if ligne.strip()
         )
         n = self.nb_lignes
@@ -1112,6 +1120,9 @@ class PanneauSession(wx.Panel):
         # modes, pour que l'un reprenne où l'autre s'est arrêté.
         self.mode_navigation = False
         self._entrees_sftp: list[EntreeDistante] = []
+        # Scénario en cours dans cette session (scenario_ui.ExecutionScenario),
+        # ou None. Ctrl+Maj+K l'arrête, voir interrompre.
+        self.scenario = None
 
         # File d'attente des transferts (SSH seulement) : un fil de
         # travail dédié les traite un par un, dans l'ordre — jamais deux
@@ -1942,6 +1953,11 @@ class PanneauSession(wx.Panel):
             self.GetTopLevelParent().reconnecter_ssh(self)
 
     def interrompre(self) -> None:
+        # Un scénario s'arrête en entier, y compris entre deux étapes où
+        # aucune commande ne tourne.
+        if self.scenario is not None:
+            self.scenario.arreter()
+            return
         if not self.en_cours:
             self.voix.dire("Aucune commande en cours.", interrompre=True)
             return
@@ -1975,7 +1991,10 @@ class PanneauSession(wx.Panel):
 
     def ajouter_bloc(
         self, commande: str, sortie: str, code_retour: int, interactif: bool = False,
+        etiquette: str = "", annoncer: bool = True,
     ) -> Bloc:
+        """annoncer=False : ni bip ni annonce, pour un appelant qui donne
+        son propre verdict (une étape de scénario, voir scenario_ui)."""
         bloc = Bloc(
             numero=len(self.blocs) + 1,
             commande=commande,
@@ -1985,6 +2004,7 @@ class PanneauSession(wx.Panel):
             duree=getattr(self, "_duree", 0.0),
             interrompue=getattr(self, "_interrompue", False),
             interactif=interactif,
+            etiquette=etiquette,
         )
         self._duree, self._interrompue = 0.0, False
         bloc.debut = self.sortie.GetLastPosition()
@@ -1998,6 +2018,8 @@ class PanneauSession(wx.Panel):
         # bascule avec F6, on arrive directement sur le contenu frais.
         self.sortie.SetInsertionPoint(bloc.debut + 1)
         self.sortie.ShowPosition(bloc.debut + 1)
+        if not annoncer:
+            return bloc
 
         # Le bip part en premier : il est instantane, la synthèse vocale non.
         if self.reglages.sons:
@@ -4024,6 +4046,8 @@ class Fenetre(wx.Frame):
                 return
         for index in range(self.carnet.GetPageCount()):
             panneau = self.carnet.GetPage(index)
+            if panneau.scenario is not None:
+                panneau.scenario.arreter()
             if panneau.en_cours:
                 panneau.executeur.interrompre()
             panneau.executeur.fermer()
@@ -4142,6 +4166,18 @@ class Fenetre(wx.Frame):
             self.item_gerer_commandes,
         ]
         barre.Append(m_commandes, "&Commandes")
+
+        m_scenarios = wx.Menu()
+        self.Bind(wx.EVT_MENU,
+                  lambda e: self.lancer_scenario(),
+                  m_scenarios.Append(wx.ID_ANY, "&Lancer un scénario…  Ctrl+Maj+Q"))
+        self.Bind(wx.EVT_MENU,
+                  lambda e: self.ouvrir_dossier_scenarios(),
+                  m_scenarios.Append(wx.ID_ANY, "&Ouvrir le dossier des scénarios"))
+        self.Bind(wx.EVT_MENU,
+                  lambda e: self.ouvrir_dossier_scenarios(journaux=True),
+                  m_scenarios.Append(wx.ID_ANY, "Ouvrir le dossier des &journaux"))
+        barre.Append(m_scenarios, "Scé&narios")
 
         m_bloc = wx.Menu()
         self.Bind(wx.EVT_MENU,
@@ -4270,6 +4306,8 @@ class Fenetre(wx.Frame):
         )
         if reponse == wx.YES:
             panneau = self.carnet.GetPage(index)
+            if panneau.scenario is not None:
+                panneau.scenario.arreter()
             if panneau.en_cours:
                 panneau.executeur.interrompre()
             panneau.executeur.fermer()
@@ -4836,6 +4874,20 @@ class Fenetre(wx.Frame):
                 "Journal", wx.OK | wx.ICON_INFORMATION,
             )
 
+    def lancer_scenario(self):
+        panneau = self.session()
+        if panneau is None:
+            return
+        # Import tardif : scenario_ui n'est chargé qu'à la première
+        # utilisation, et ne dépend pas de ce module (voir son en-tête).
+        from scenario_ui import lancer_scenario
+        lancer_scenario(self, panneau, dossier_base(), copier_presse_papiers, bip)
+
+    def ouvrir_dossier_scenarios(self, journaux: bool = False):
+        from scenario_ui import dossier_scenarios, ouvrir_dossier
+        dossier = dossier_scenarios(dossier_base())
+        ouvrir_dossier(dossier / "journaux" if journaux else dossier)
+
     def ouvrir_depot_github(self):
         """Ouvre la page du dépôt GitHub dans le navigateur par défaut."""
         import webbrowser
@@ -5065,6 +5117,10 @@ class Fenetre(wx.Frame):
 
         if ctrl and maj and code == ord("M"):
             self.enregistrer_commande_actuelle()
+            return
+
+        if ctrl and maj and code == ord("Q"):
+            self.lancer_scenario()
             return
 
         if ctrl and maj and code == ord("C"):

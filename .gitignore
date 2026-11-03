@@ -39,5 +39,11 @@ settings.json
 # peuvent reveler des noms de serveurs ou de projets internes.
 commands.json
 
+# Scenarios : seul l'exemple generique est versionne. Les autres
+# decrivent des serveurs reels (noms de conteneurs, chemins), et les
+# journaux d'execution contiennent leurs sorties.
+scenarios/*
+!scenarios/exemple.toml
+
 # Copies de sauvegarde faites avant chaque palier de modification.
 sauvegardes/
