@@ -1475,6 +1475,19 @@ L'environnement Python est dans `venv`. Utiliser
   cours de commande. Reste à vérifier au clavier avec NVDA sur le VPS.
   Paliers suivants : mémorisation de valeurs et reprise, sauvegarde,
   mise à jour, retour arrière (jamais enchaîné seul), documentation.
+  Revu après le premier essai réel : les étapes rapides s'enchaînaient
+  plus vite que la synthèse, et l'annonce de fin n'arrivait qu'en
+  braille (annonces vocales coupées). Nouveau mode **pas à pas**, coché
+  par défaut au lancement : avant chaque étape, une boîte
+  (`DialogueVerdict`, ex `DialogueProbleme`, généralisée) rappelle le
+  verdict de la précédente, présente la suivante avec sa commande dans
+  un champ lisible, et attend Continuer ou Arrêter. Verdicts de problème
+  et fin de scénario passent eux aussi par une boîte (lue par NVDA
+  elle-même) plutôt que par la voix ; une annonce qui suit la fermeture
+  d'une boîte attend 0,5 s, le temps que NVDA annonce le retour du focus.
+  Constaté au même essai : l'étape « journal de la gateway » des
+  contrôles exige quatre « Connected to Telegram » dans les 80 dernières
+  lignes, ce qui n'a de sens que juste après une relance ; à revoir.
 
 ## Idées à reprendre plus tard
 
