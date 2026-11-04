@@ -92,7 +92,7 @@ class Etape:
     titre: str
     commande: str = ""
     # Étape sans commande : une question posée à l'utilisateur (un
-    # contrôle à faire à la main), Oui vaut Bon, Non vaut Problème.
+    # contrôle à faire à la main), Oui vaut OK, Non vaut Problème.
     question: str = ""
     destructive: bool = False
     attendu: Attendu = field(default_factory=Attendu)

@@ -36,7 +36,7 @@ from scenario import (
 # vers une étape déjà passée, réessais sans fin...).
 MAX_ETAPES_EXECUTEES = 500
 
-BON = "Bon"
+BON = "OK"
 PROBLEME = "Problème"
 
 
@@ -703,9 +703,9 @@ class ExecutionScenario:
         if not self.simulation:
             bonnes = self.nb_bonnes
             morceaux.append(
-                "Aucune étape bonne." if bonnes == 0
-                else "1 étape bonne." if bonnes == 1
-                else f"{bonnes} étapes bonnes."
+                "Aucune étape OK." if bonnes == 0
+                else "1 étape OK." if bonnes == 1
+                else f"{bonnes} étapes OK."
             )
         morceaux.append(f"Journal : {nom_journal}")
         wx.MessageBox(

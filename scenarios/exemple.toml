@@ -78,7 +78,7 @@ hors_sequence = true
 [[etape]]
 id = "question"
 titre = "Contrôle manuel"
-# Une question à la place d'une commande : Oui vaut Bon, Non vaut
+# Une question à la place d'une commande : Oui vaut OK, Non vaut
 # Problème.
 question = "Avez-vous bien entendu chaque verdict ?"
 si_echec = ["reessayer", "continuer"]
