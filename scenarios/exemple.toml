@@ -13,6 +13,10 @@
 #                toujours ;
 #   [[etape]]    une étape, autant de fois que nécessaire.
 #
+# Si une exécution réelle s'interrompt (arrêt, onglet fermé, connexion
+# perdue), le prochain lancement du même scénario propose de reprendre à
+# l'étape interrompue, avec la même date et les valeurs déjà mémorisées.
+#
 # Une commande se met entre trois apostrophes : on la recopie telle
 # quelle, guillemets et apostrophes compris, sans rien échapper.
 
@@ -43,6 +47,20 @@ id = "marque"
 titre = "Afficher la marque du jour"
 commande = '''echo {{marque}}'''
 attendu = { motif = 'exemple-\d{8}' }
+# memoriser : garde une valeur lue dans la sortie, réutilisable ensuite
+# en {{nom}}. Avec des parenthèses dans le motif, seul ce qu'elles
+# entourent est gardé (ici les huit chiffres). Une valeur introuvable
+# est un problème. En cas d'interruption, la valeur est gardée pour la
+# reprise.
+memoriser = { jour = 'exemple-(\d{8})' }
+
+[[etape]]
+id = "relire"
+titre = "Réutiliser la valeur mémorisée"
+commande = '''echo jour-{{jour}}'''
+# Une valeur mémorisée sert aussi dans un résultat attendu : ici, le jour
+# lu doit être celui de la date du lancement.
+attendu = { contient = "jour-{{date}}" }
 
 [[etape]]
 id = "essai-destructif"

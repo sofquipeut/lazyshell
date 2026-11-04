@@ -28,8 +28,10 @@ import wx
 
 from scenario import (
     ALTERNATIVE, ARRETER, CONTINUER, FIN, REESSAYER, SUIVANTE,
-    ErreurScenario, JournalScenario, Scenario, charger_scenario,
-    lister_scenarios, rapport, substituer, variables_initiales, verifier,
+    ErreurScenario, JournalScenario, Scenario, charger_scenario, chemin_etat,
+    effacer_etat, enregistrer_etat, extraire, lire_etat, lister_scenarios,
+    noms_memorises, rapport, substituer, variables_initiales,
+    variables_manquantes, verifier,
 )
 
 # Garde-fou contre un scénario qui tournerait en rond (si_bon qui renvoie
@@ -151,6 +153,7 @@ class DialogueVerdict(wx.Dialog):
         self, parent, titre: str, message: str, sortie: str,
         choix: list[tuple[str, str]], texte_rapport: str | None, copier, voix,
         etiquette_sortie: str = "Sortie de la &commande :",
+        focus_sur_sortie: bool = False,
     ):
         super().__init__(parent, title=titre, style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
         self.choix: str | tuple = ARRETER
@@ -198,7 +201,7 @@ class DialogueVerdict(wx.Dialog):
         boite.Add(self.champ_sortie, 1, wx.EXPAND | wx.ALL, 10)
         self.SetSizerAndFit(boite)
         self.SetEscapeId(wx.ID_CANCEL)
-        wx.CallAfter(premier.SetFocus)
+        wx.CallAfter((self.champ_sortie if focus_sur_sortie else premier).SetFocus)
 
     def _choisir(self, valeur) -> None:
         self.choix = valeur
@@ -209,6 +212,84 @@ class DialogueVerdict(wx.Dialog):
             self._voix.dire("Rapport copié dans le presse-papiers.", interrompre=True)
         else:
             self._voix.dire("Presse-papiers inaccessible.", interrompre=True)
+
+
+class DialogueReprise(wx.Dialog):
+    """Le scénario choisi a une exécution interrompue : reprendre là où
+    elle s'est arrêtée (ou à une autre étape, avec les valeurs déjà
+    mémorisées), ou recommencer depuis le début."""
+
+    def __init__(self, parent, scenario: Scenario, etat: dict):
+        super().__init__(
+            parent, title=f"Reprise, {scenario.nom}",
+            style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
+        )
+        self.choix: tuple | None = None
+        self._sequence = scenario.etapes_en_sequence()
+        prochaine = scenario.etapes[scenario.index(etat["prochaine"])]
+        try:
+            quand = datetime.fromisoformat(etat["interrompu_le"]).strftime("le %d/%m à %H:%M")
+        except (KeyError, TypeError, ValueError):
+            quand = "à une date inconnue"
+        if prochaine in self._sequence:
+            ou = f"l'étape {self._sequence.index(prochaine) + 1} sur {len(self._sequence)}"
+        else:
+            ou = "l'étape alternative"
+        lignes = [f"Interrompu {quand}, à {ou} : {prochaine.titre}."]
+        memorise = etat.get("memorise") or {}
+        if memorise:
+            lignes.append("Valeurs gardées : " + "; ".join(
+                f"{nom} = {valeur}" for nom, valeur in memorise.items()
+            ) + ".")
+        texte = wx.StaticText(self, label="\n".join(lignes))
+        texte.Wrap(520)
+
+        bouton_reprendre = wx.Button(self, id=wx.ID_OK, label="&Reprendre")
+        bouton_reprendre.SetDefault()
+        etiquette = wx.StaticText(self, label="&Étape de reprise :")
+        self.liste = wx.ListBox(self)
+        self.liste.SetName("Étape de reprise")
+        for numero, etape in enumerate(self._sequence, start=1):
+            self.liste.Append(f"Étape {numero} : {etape.titre}")
+        self._etape_alternative = None
+        if prochaine in self._sequence:
+            self.liste.SetSelection(self._sequence.index(prochaine))
+        else:
+            # Interrompu dans une alternative : on la rejoue par défaut,
+            # la liste ne propose que les étapes de la séquence normale.
+            self._etape_alternative = prochaine.id
+        bouton_debut = wx.Button(self, label="Re&commencer depuis le début")
+        bouton_annuler = wx.Button(self, id=wx.ID_CANCEL, label="Ann&uler")
+        self.Bind(wx.EVT_BUTTON, self._sur_reprendre, id=wx.ID_OK)
+        bouton_debut.Bind(wx.EVT_BUTTON, self._sur_debut)
+        self.liste.Bind(wx.EVT_LISTBOX, lambda e: setattr(self, "_etape_alternative", None))
+
+        boutons = wx.BoxSizer(wx.HORIZONTAL)
+        boutons.Add(bouton_debut, 0, wx.RIGHT, 6)
+        boutons.Add(bouton_annuler, 0)
+        boite = wx.BoxSizer(wx.VERTICAL)
+        boite.Add(texte, 0, wx.ALL, 10)
+        boite.Add(bouton_reprendre, 0, wx.LEFT | wx.RIGHT, 10)
+        boite.Add(etiquette, 0, wx.LEFT | wx.RIGHT | wx.TOP, 10)
+        boite.Add(self.liste, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+        boite.Add(boutons, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        self.SetSizerAndFit(boite)
+        self.SetSize((560, 380))
+        wx.CallAfter(bouton_reprendre.SetFocus)
+
+    def _sur_reprendre(self, evt) -> None:
+        if self._etape_alternative is not None:
+            self.choix = ("reprendre", self._etape_alternative)
+        else:
+            index = self.liste.GetSelection()
+            if index == wx.NOT_FOUND:
+                index = 0
+            self.choix = ("reprendre", self._sequence[index].id)
+        self.EndModal(wx.ID_OK)
+
+    def _sur_debut(self, evt) -> None:
+        self.choix = ("debut",)
+        self.EndModal(wx.ID_OK)
 
 
 def ouvrir_dossier(dossier: Path) -> None:
@@ -235,8 +316,13 @@ class ExecutionScenario:
     def __init__(
         self, panneau, scenario: Scenario, simulation: bool,
         lire_commandes: bool, dossier_journaux: Path, copier, bip,
-        pas_a_pas: bool = True,
+        pas_a_pas: bool = True, dossier_etat: Path | None = None,
+        reprise: dict | None = None, depart: str | None = None,
     ):
+        """reprise : état enregistré d'une exécution interrompue (voir
+        scenario.lire_etat), dont on reprend la date et les valeurs
+        mémorisées. depart : identifiant de l'étape par laquelle commencer,
+        la première par défaut."""
         self.panneau = panneau
         # Gardés à part : le thread de fond s'en sert sans toucher au
         # panneau, qui peut être détruit si l'onglet est fermé.
@@ -253,11 +339,28 @@ class ExecutionScenario:
         self.bip = bip
         self._arret = threading.Event()
         self._commande_lancee = False
-        self.valeurs = variables_initiales(scenario, datetime.now())
+        self.lance_le = datetime.now()
+        self.reprise = reprise
+        self.memorises = noms_memorises(scenario)
+        self.valeurs = variables_initiales(
+            scenario, self.lance_le,
+            date=reprise.get("date") if reprise else None,
+            memorisees=reprise.get("memorise") if reprise else None,
+        )
         self.sequence = scenario.etapes_en_sequence()
         # Où reprendre une fois une étape alternative réussie : là où
         # serait allée l'étape qu'elle remplace.
         self._retour_alternative: int | None = None
+        # Le point de retour d'une alternative ne vaut que si l'on reprend
+        # dans cette alternative même, pas à une autre étape choisie.
+        if reprise and reprise.get("retour") and depart == reprise.get("prochaine"):
+            self._retour_alternative = scenario.index(reprise["retour"])
+        self._depart = scenario.index(depart) if depart else scenario.index(self.sequence[0].id)
+        # Pas d'état de reprise en simulation : rien n'y a été fait pour de vrai.
+        self.chemin_etat = (
+            chemin_etat(dossier_etat, scenario)
+            if dossier_etat is not None and not simulation else None
+        )
         self.bilan: list[str] = []
         self.nb_bonnes = 0
         # Verdict de la dernière étape jouée, rappelé en tête de la boîte
@@ -378,8 +481,20 @@ class ExecutionScenario:
     def _boucle(self) -> None:
         conclusion = "terminé"
         problemes_passes = 0
-        i: int | None = self.scenario.index(self.sequence[0].id)
+        i: int | None = self._depart
         executees = 0
+        if self.reprise:
+            try:
+                quand = datetime.fromisoformat(self.reprise["interrompu_le"]).strftime(
+                    "le %d/%m/%Y à %H:%M:%S"
+                )
+            except (KeyError, TypeError, ValueError):
+                quand = "à une date inconnue"
+            self.journal.evenement(
+                f"Reprise à l'{self._libelle(i).lower()}, exécution interrompue {quand}."
+            )
+            for nom, valeur in self.reprise.get("memorise", {}).items():
+                self.journal.ecrire(f"Valeur reprise : {nom} = {valeur}")
         try:
             while i is not None:
                 if self._arret.is_set() or not self.panneau:
@@ -389,6 +504,7 @@ class ExecutionScenario:
                 if executees > MAX_ETAPES_EXECUTEES:
                     conclusion = "arrêté : trop d'étapes exécutées, le scénario tourne en rond"
                     break
+                self._enregistrer_etat(i)
                 suite = self._executer_etape(i)
                 if suite == ARRETER:
                     conclusion = f"arrêté à l'{self._libelle(i).lower()}"
@@ -408,6 +524,10 @@ class ExecutionScenario:
         except Exception:
             logging.exception("Scénario : erreur inattendue.")
             conclusion = "arrêté sur une erreur inattendue, voir lazyshell.log"
+        # Terminé : plus rien à reprendre. Arrêté : l'état reste, la
+        # prochaine ouverture du scénario proposera de reprendre.
+        if conclusion == "terminé" and self.chemin_etat is not None:
+            effacer_etat(self.chemin_etat)
         if conclusion == "terminé" and problemes_passes:
             conclusion = (
                 f"terminé, {problemes_passes} problème passé" if problemes_passes == 1
@@ -417,6 +537,22 @@ class ExecutionScenario:
             # Onglet fermé en cours de route : le journal se referme quand
             # même, pour garder la trace de l'arrêt.
             self.journal.fermer(conclusion)
+
+    def _enregistrer_etat(self, i: int) -> None:
+        """Avant chaque étape : si tout s'arrête pendant qu'elle tourne,
+        c'est elle qu'on rejouera à la reprise."""
+        if self.chemin_etat is None:
+            return
+        retour = self._retour_alternative
+        try:
+            enregistrer_etat(
+                self.chemin_etat, self.scenario.etapes[i].id, self.valeurs,
+                self.memorises,
+                self.scenario.etapes[retour].id if retour is not None else None,
+                self.lance_le,
+            )
+        except OSError:
+            logging.exception("État de reprise impossible à enregistrer.")
 
     def _executer_etape(self, i: int):
         """Joue une étape. Renvoie BON (suite normale), ou le choix fait
@@ -479,6 +615,13 @@ class ExecutionScenario:
             code, duree, interrompue = 0, 0.0, False
             problemes = [] if oui else ["réponse Non à la question"]
             commande_bloc = question
+        elif manquantes := variables_manquantes(commande, self.valeurs):
+            # Une valeur qu'une étape précédente devait mémoriser : on ne
+            # lance pas une commande à moitié remplie.
+            noms = ", ".join(manquantes)
+            sortie, code, duree, interrompue = "[Commande non lancée.]", 0, 0.0, False
+            problemes = [f"valeur pas encore connue : {noms}"]
+            commande_bloc = commande
         else:
             self._commande_lancee = True
             try:
@@ -498,6 +641,8 @@ class ExecutionScenario:
             if code == -1 and self.distant and not self.executeur.connexion_active:
                 problemes.insert(0, "connexion SSH perdue")
             commande_bloc = commande
+            if not problemes and not interrompue:
+                problemes = self._memoriser(etape, sortie)
 
         if interrompue or self._arret.is_set():
             self._sur_interface(
@@ -513,6 +658,11 @@ class ExecutionScenario:
 
         verdict = PROBLEME if problemes else BON
         sortie_bloc = sortie
+        lues = [n for n in etape.memoriser if n in self.valeurs]
+        if lues and not problemes:
+            sortie_bloc = (sortie + "\n" if sortie else "") + "[Mémorisé : " + "; ".join(
+                f"{n} = {self.valeurs[n]}" for n in lues
+            ) + ".]"
         if problemes:
             sortie_bloc = (sortie + "\n" if sortie else "") + (
                 "[Problème : " + "; ".join(problemes) + ".]"
@@ -534,6 +684,12 @@ class ExecutionScenario:
 
         if self.reglages.sons:
             self.bip(not problemes)
+        if not problemes and etape.relire:
+            if self._boite(self._relire, libelle, etape, sortie) != BON:
+                self.journal.evenement("Arrêt demandé après relecture de la sortie.")
+                self.nb_bonnes += 1
+                return ARRETER
+            self.journal.evenement("Sortie relue, suite demandée.")
         if not problemes:
             self.nb_bonnes += 1
             self._precedente = BON
@@ -564,6 +720,19 @@ class ExecutionScenario:
         else:
             self._precedente = PROBLEME
         return choix
+
+    def _memoriser(self, etape, sortie: str) -> list[str]:
+        """Lit les valeurs à mémoriser. Une valeur introuvable est un
+        problème : une étape suivante en dépendrait."""
+        problemes = []
+        for nom, motif in etape.memoriser.items():
+            valeur = extraire(motif, sortie)
+            if valeur is None:
+                problemes.append(f"valeur à mémoriser introuvable : {nom}")
+                continue
+            self.valeurs[nom] = valeur
+            self.journal.ecrire(f"Mémorisé : {nom} = {valeur}")
+        return problemes
 
     def _journaliser_sortie(self, etape, sortie: str) -> None:
         if not etape.sortie_au_journal:
@@ -630,7 +799,10 @@ class ExecutionScenario:
         message = ""
         if not self._precedente:
             mode = "Simulation" if self.simulation else "Scénario"
-            message = f"{mode} {self.scenario.nom}, {len(self.sequence)} étapes."
+            if self.reprise:
+                message = f"Reprise de {self.scenario.nom}."
+            else:
+                message = f"{mode} {self.scenario.nom}, {len(self.sequence)} étapes."
         if commande:
             contenu = commande
             etiquette = (
@@ -646,6 +818,23 @@ class ExecutionScenario:
             contenu,
             [(BON, "&Continuer"), (ARRETER, "&Arrêter le scénario")],
             None, self.copier, self.voix, etiquette_sortie=etiquette,
+        )
+        try:
+            boite.ShowModal()
+            return boite.choix
+        finally:
+            boite.Destroy()
+
+    def _relire(self, libelle: str, etape, sortie: str):
+        """Étape OK dont la sortie est à lire (relire = true) : le focus
+        arrive directement sur la sortie. Renvoie BON pour continuer."""
+        boite = DialogueVerdict(
+            self.panneau.GetTopLevelParent(),
+            f"{BON}, à relire. {libelle}, {etape.titre}",
+            "",
+            sortie,
+            [(BON, "&Continuer"), (ARRETER, "&Arrêter le scénario")],
+            None, self.copier, self.voix, focus_sur_sortie=True,
         )
         try:
             boite.ShowModal()
@@ -763,7 +952,35 @@ def lancer_scenario(fenetre, panneau, base: Path, copier, bip) -> None:
             panneau.saisie.SetFocus()
             return
 
+    # Une exécution réelle interrompue : proposer de la reprendre. Une
+    # simulation ignore cet état (et n'en écrit jamais).
+    dossier_etat = dossier / "etat"
+    reprise, depart = None, None
+    if not simulation:
+        chemin = chemin_etat(dossier_etat, scenario)
+        etat = lire_etat(chemin, scenario)
+        if etat is None and chemin.exists():
+            logging.warning("État de reprise illisible ou périmé, ignoré : %s", chemin)
+            wx.MessageBox(
+                "Une exécution précédente de ce scénario a été interrompue, mais "
+                "le fichier a changé depuis : elle ne peut pas être reprise. "
+                "Le scénario repartira du début.",
+                "Reprise impossible", wx.OK | wx.ICON_INFORMATION, fenetre,
+            )
+        elif etat is not None:
+            boite = DialogueReprise(fenetre, scenario, etat)
+            try:
+                if boite.ShowModal() != wx.ID_OK or boite.choix is None:
+                    panneau.saisie.SetFocus()
+                    return
+                choix = boite.choix
+            finally:
+                boite.Destroy()
+            if choix[0] == "reprendre":
+                reprise, depart = etat, choix[1]
+
     ExecutionScenario(
         panneau, scenario, simulation, lire_commandes,
         dossier / "journaux", copier, bip, pas_a_pas=pas_a_pas,
+        dossier_etat=dossier_etat, reprise=reprise, depart=depart,
     ).demarrer()

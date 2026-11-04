@@ -1488,6 +1488,35 @@ L'environnement Python est dans `venv`. Utiliser
   Constaté au même essai : l'étape « journal de la gateway » des
   contrôles exige quatre « Connected to Telegram » dans les 80 dernières
   lignes, ce qui n'a de sens que juste après une relance ; à revoir.
+  Verdict « OK » plutôt que « Bon », boîtes pas à pas réduites au titre
+  (statut de la précédente en un mot, puis l'étape suivante), à la
+  demande de l'utilisateur.
+
+- **Scénarios, palier 2 : mémorisation, reprise, sauvegarde Hermes.**
+  `memoriser = { nom = 'motif' }` sur une étape : premier groupe du motif
+  (ou tout le texte trouvé) gardé, réutilisable en `{{nom}}` dans les
+  commandes et les résultats attendus ; introuvable = problème ; une
+  commande qui dépend d'une valeur pas encore mémorisée n'est pas lancée
+  (problème « valeur pas encore connue »). `relire = true` : sortie à
+  lire avant de continuer même si l'étape est OK (boîte, focus sur la
+  sortie), pour l'audit de la fiche et plus tard le `compose pull`.
+  Reprise : `scenarios\etat\<scénario>.json` réécrit avant chaque étape
+  (étape à rejouer, date du premier lancement, valeurs mémorisées,
+  point de retour d'une alternative), écriture atomique par fichier
+  provisoire, effacé quand le scénario se termine, jamais écrit en
+  simulation ; au lancement suivant, `DialogueReprise` propose de
+  reprendre à cette étape (ou une autre de la liste) ou de recommencer.
+  Un état qui désigne une étape disparue (fichier modifié) est ignoré
+  avec un avertissement. La date reprise est celle du premier lancement :
+  la sauvegarde du jour garde son nom. `hermes-mise-a-jour.toml` (local)
+  ne contient encore que la section 0 de la fiche ; notes, étiquettes
+  `avant-date` et sauvegarde ne sont jamais refaites par-dessus celles du
+  jour (rejouées après le pull, elles pointeraient sur la nouvelle image
+  ou les nouvelles données). Contrôles : l'étape du journal de la gateway
+  ne cherche plus que composio et caverne (les « Connected » viendront
+  après la relance, au palier 3) ; sortie de `plugins list` hors journal.
+  Masquage « bearer » limité à une valeur d'au moins 16 caractères (il
+  masquait un mot dans une description de plugin).
 
 ## Idées à reprendre plus tard
 

@@ -16,6 +16,7 @@ ni guillemets ni barres obliques inverses.
 
 from __future__ import annotations
 
+import json
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -51,7 +52,8 @@ VARIABLES_FOURNIES = ("date",)
 CLES_SCENARIO = {"nom", "description", "profil", "variables", "etape"}
 CLES_ETAPE = {
     "id", "titre", "commande", "question", "destructive", "attendu",
-    "si_bon", "si_echec", "hors_sequence", "sortie_au_journal",
+    "si_bon", "si_echec", "hors_sequence", "sortie_au_journal", "memoriser",
+    "relire",
 }
 CLES_ATTENDU = {
     "code", "contient", "interdit", "motif", "nombre_min", "nombre_max",
@@ -66,7 +68,10 @@ MOTIF_SECRET = re.compile(
     r"(?i)\b(password|passwd|mot de passe|passphrase|token|secret|api[_-]?key)"
     r"(\s*[=:]\s*)(\S+)"
 )
-MOTIF_BEARER = re.compile(r"(?i)\b(bearer\s+)(\S+)")
+# Seize caractères au moins : un vrai jeton est long, alors que « bearer
+# token » dans une phrase (une description de plugin) ne doit pas être
+# masqué.
+MOTIF_BEARER = re.compile(r"(?i)\b(bearer\s+)([A-Za-z0-9._~+/=-]{16,})")
 MASQUE = "(masqué)"
 
 
@@ -102,6 +107,13 @@ class Etape:
     # Jamais atteinte dans l'ordre normal, seulement comme alternative.
     hors_sequence: bool = False
     sortie_au_journal: bool = True
+    # Sortie à lire par l'utilisateur avant de continuer, même si l'étape
+    # est OK (un audit, une liste d'images annoncées par un pull...).
+    relire: bool = False
+    # Valeurs lues dans la sortie, réutilisables plus loin en {{nom}} :
+    # nom -> expression régulière. Le premier groupe entre parenthèses est
+    # gardé s'il y en a un, sinon tout le texte trouvé.
+    memoriser: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -231,11 +243,13 @@ def _lire_etape(donnees, numero: int) -> Etape:
         raise ErreurScenario(f"{ou} : il faut soit une commande, soit une question, pas les deux.")
 
     etape = Etape(id=identifiant, titre=titre.strip(), commande=commande, question=question)
-    for cle in ("destructive", "hors_sequence", "sortie_au_journal"):
+    for cle in ("destructive", "hors_sequence", "sortie_au_journal", "relire"):
         if cle in donnees:
             if not isinstance(donnees[cle], bool):
                 raise ErreurScenario(f"{ou} : {cle} doit valoir true ou false.")
             setattr(etape, cle, donnees[cle])
+    if etape.relire and question:
+        raise ErreurScenario(f"{ou} : une question n'a pas de sortie à relire.")
     if "attendu" in donnees:
         if question:
             raise ErreurScenario(f"{ou} : une question n'a pas de résultat attendu.")
@@ -246,6 +260,24 @@ def _lire_etape(donnees, numero: int) -> Etape:
         etape.si_bon = donnees["si_bon"]
     if "si_echec" in donnees:
         etape.si_echec = _lire_si_echec(donnees["si_echec"], ou)
+    if "memoriser" in donnees:
+        if question:
+            raise ErreurScenario(f"{ou} : une question ne peut rien mémoriser.")
+        table = donnees["memoriser"]
+        if not isinstance(table, dict) or not table:
+            raise ErreurScenario(f"{ou} : memoriser doit être une table nom = 'motif'.")
+        for nom, motif in table.items():
+            if not MOTIF_IDENTIFIANT.match(nom) or "-" in nom:
+                raise ErreurScenario(
+                    f"{ou} : nom à mémoriser invalide « {nom} » (minuscules, chiffres, souligné)."
+                )
+            if not isinstance(motif, str) or not motif:
+                raise ErreurScenario(f"{ou} : memoriser, {nom} : un motif est attendu.")
+            try:
+                re.compile(motif)
+            except re.error as erreur:
+                raise ErreurScenario(f"{ou} : memoriser, {nom} : motif invalide ({erreur}).") from erreur
+        etape.memoriser = dict(table)
     return etape
 
 
@@ -328,6 +360,18 @@ def charger_scenario(chemin: Path) -> Scenario:
                 )
         connus.add(cle)
 
+    # Les valeurs mémorisées sont connues partout dans les étapes (une
+    # alternative peut sauter n'importe où) ; celles qui ne le sont pas
+    # encore au moment de jouer une étape sont signalées à ce moment-là.
+    for etape in scenario.etapes:
+        for nom in etape.memoriser:
+            if nom in VARIABLES_FOURNIES or nom in scenario.variables:
+                raise ErreurScenario(
+                    f"Étape {etape.id} : « {nom} » est déjà une variable, "
+                    "choisissez un autre nom à mémoriser."
+                )
+            connus.add(nom)
+
     for numero, etape in enumerate(scenario.etapes, start=1):
         ou = f"Étape {numero} ({etape.id})"
         a = etape.attendu
@@ -366,11 +410,38 @@ def lister_scenarios(dossier: Path) -> list[Path]:
 # Variables et contrôle du résultat
 # --------------------------------------------------------------------------
 
-def variables_initiales(scenario: Scenario, maintenant: datetime) -> dict[str, str]:
-    valeurs = {"date": maintenant.strftime("%Y%m%d")}
+def variables_initiales(
+    scenario: Scenario, maintenant: datetime, date: str | None = None,
+    memorisees: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """date et memorisees servent à la reprise : on retrouve la date du
+    premier lancement (le nom de la sauvegarde en dépend) et les valeurs
+    déjà lues avant l'interruption."""
+    valeurs = {"date": date or maintenant.strftime("%Y%m%d")}
     for cle, valeur in scenario.variables.items():
         valeurs[cle] = substituer(valeur, valeurs)
+    valeurs.update(memorisees or {})
     return valeurs
+
+
+def noms_memorises(scenario: Scenario) -> set[str]:
+    return {nom for etape in scenario.etapes for nom in etape.memoriser}
+
+
+def variables_manquantes(texte: str, valeurs: dict[str, str]) -> list[str]:
+    """Noms encore sans valeur : une valeur à mémoriser par une étape qui
+    n'a pas encore été jouée."""
+    return [nom for nom in MOTIF_VARIABLE.findall(texte) if nom not in valeurs]
+
+
+def extraire(motif: str, sortie: str) -> str | None:
+    """Valeur à mémoriser : le premier groupe s'il y en a un, sinon tout
+    le texte trouvé. None si le motif est introuvable."""
+    trouve = re.search(motif, sortie, re.MULTILINE)
+    if trouve is None:
+        return None
+    valeur = trouve.group(1) if trouve.groups() else trouve.group(0)
+    return (valeur or "").strip() or None
 
 
 def substituer(texte: str, valeurs: dict[str, str]) -> str:
@@ -421,6 +492,61 @@ def verifier(attendu: Attendu, sortie: str, code: int, valeurs: dict[str, str]) 
                     f"motif trouvé {nombre} fois au lieu d'au plus {attendu.nombre_max} : {motif}"
                 )
     return problemes
+
+
+# --------------------------------------------------------------------------
+# État de reprise
+# --------------------------------------------------------------------------
+#
+# Un fichier JSON par scénario, réécrit avant chaque étape : si LazyShell
+# s'arrête (onglet fermé, connexion perdue, plantage), on sait quelle étape
+# rejouer et avec quelles valeurs. Effacé quand le scénario se termine.
+# Jamais en simulation : rien n'y a été fait pour de vrai.
+
+def chemin_etat(dossier: Path, scenario: Scenario) -> Path:
+    return dossier / f"{scenario.chemin.stem}.json"
+
+
+def enregistrer_etat(
+    chemin: Path, prochaine: str, valeurs: dict[str, str],
+    memorises: set[str], retour: str | None, lance_le: datetime,
+) -> None:
+    chemin.parent.mkdir(parents=True, exist_ok=True)
+    donnees = {
+        "prochaine": prochaine,
+        "date": valeurs.get("date", ""),
+        "memorise": {k: v for k, v in valeurs.items() if k in memorises},
+        "retour": retour,
+        "lance_le": lance_le.isoformat(timespec="seconds"),
+        "interrompu_le": datetime.now().isoformat(timespec="seconds"),
+    }
+    # Écriture dans un fichier à part puis remplacement : un arrêt en plein
+    # milieu ne laisse jamais un état à moitié écrit.
+    provisoire = chemin.with_suffix(".tmp")
+    provisoire.write_text(json.dumps(donnees, ensure_ascii=False, indent=2), encoding="utf-8")
+    provisoire.replace(chemin)
+
+
+def lire_etat(chemin: Path, scenario: Scenario) -> dict | None:
+    """État enregistré, ou None s'il n'y en a pas, s'il est illisible, ou
+    s'il désigne une étape qui n'existe plus (fichier modifié depuis)."""
+    try:
+        donnees = json.loads(chemin.read_text(encoding="utf-8"))
+        scenario.index(donnees["prochaine"])
+        if donnees.get("retour"):
+            scenario.index(donnees["retour"])
+        if not isinstance(donnees.get("memorise", {}), dict):
+            return None
+        return donnees
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def effacer_etat(chemin: Path) -> None:
+    try:
+        chemin.unlink()
+    except FileNotFoundError:
+        pass
 
 
 # --------------------------------------------------------------------------
