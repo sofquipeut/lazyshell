@@ -46,6 +46,7 @@ de fenêtre de console.</p>
 <ul>
   <li><a href="#fonctionnement">Fonctionnement général</a></li>
   <li><a href="#interactif">Sessions interactives</a></li>
+  <li><a href="#scenarios">Scénarios</a></li>
   <li><a href="#navigation">Mode navigation (SFTP)</a></li>
   <li><a href="#raccourcis">Raccourcis clavier</a></li>
   <li><a href="#limites">Limites connues</a></li>
@@ -217,6 +218,79 @@ route ferme la session, avec la même explication. Pour modifier un
 fichier distant, le mode navigation (Ctrl+Maj+F, puis Entrée sur le
 fichier) l'ouvre dans le Bloc-notes.</p>
 
+<h2 id="scenarios">Scénarios</h2>
+
+<p>Un scénario est une procédure écrite à l'avance, une étape après
+l'autre, dans un fichier texte : par exemple la mise à jour d'un serveur.
+LazyShell tape chaque commande dans la session courante, comme vous le
+feriez à la main, vérifie le résultat, et donne un verdict : OK ou
+Problème. Il ne fait rien de plus que ce qui est écrit dans le fichier.</p>
+
+<h3>Lancer un scénario (Ctrl+Maj+Q)</h3>
+
+<p>Ctrl+Maj+Q, ou le menu Scénarios, ouvre la liste des scénarios du
+dossier <code>scenarios</code>, à côté de l'application. Un fichier qui
+contient une erreur (champ mal orthographié, étape introuvable...) est
+signalé dans la liste, avec l'explication, avant tout lancement. Trois
+cases à cocher :</p>
+<ul>
+  <li><strong>Mode simulation</strong> : chaque étape est présentée, rien
+  n'est exécuté. Pour relire une procédure sans risque.</li>
+  <li><strong>Lire la commande avant chaque étape</strong>.</li>
+  <li><strong>Pas à pas</strong>, coché par défaut : avant chaque étape,
+  une boîte s'ouvre, et rien ne part avant Entrée.</li>
+</ul>
+<p>Un scénario qui désigne un profil SSH refuse de tourner dans une autre
+session (sauf en simulation) : c'est le garde-fou contre une procédure
+lancée sur le mauvais serveur.</p>
+
+<h3>Pendant le scénario</h3>
+
+<p>En pas à pas, le titre de chaque boîte donne d'abord le résultat de
+l'étape précédente en un mot (« OK », « Problème passé »...), puis
+l'étape suivante : « OK. Étape 5 sur 13, Tâches du profil boulot ». Le
+bouton Continuer lance l'étape ; Tab mène à la commande, lisible en
+entier. Une étape <strong>destructive</strong> le dit dans son titre et
+demande en plus une confirmation, avec Non par défaut. Certaines étapes
+demandent de lire leur sortie avant de continuer : la boîte s'ouvre alors
+directement sur la sortie.</p>
+
+<p>Chaque étape laisse un bloc dans la sortie, comme une commande, dont
+l'en-tête porte l'étape et son verdict. Ctrl+Maj+K arrête le scénario à
+tout moment, y compris pendant une commande.</p>
+
+<h3>Quand une étape pose problème</h3>
+
+<p>Une boîte donne la raison (« texte attendu absent : running ») et
+propose, selon l'étape : Réessayer, une étape alternative, Continuer quand
+même, Lancer le retour arrière, Arrêter. Le bouton Copier le rapport place
+dans le presse-papiers l'étape, la commande et sa sortie, prêts à être
+montrés à quelqu'un pour de l'aide ; il ne ferme pas la boîte. Un retour
+arrière n'est jamais lancé tout seul : il faut le choisir, puis le
+confirmer.</p>
+
+<h3>Reprise, journal</h3>
+
+<p>Si un scénario s'interrompt (arrêt, onglet fermé, connexion perdue,
+plantage), le prochain lancement du même scénario propose de reprendre à
+l'étape interrompue, ou à une autre, avec les valeurs déjà relevées
+(une version, une heure) et la date du premier lancement. Chaque
+exécution laisse un journal daté dans <code>scenarios\journaux</code>
+(menu Scénarios, Ouvrir le dossier des journaux) : chaque commande, sa
+sortie et son verdict. Les valeurs ressemblant à un mot de passe ou à un
+jeton y sont masquées.</p>
+
+<h3>Écrire un scénario</h3>
+
+<p>Les scénarios sont des fichiers TOML, modifiables dans le Bloc-notes
+(enregistrés en UTF-8). Le fichier <code>scenarios\exemple.toml</code>,
+sans aucun effet, présente chaque possibilité en commentaire : résultat
+attendu (code de retour, texte présent ou interdit, motif et nombre
+d'occurrences, lignes de journal postérieures à une heure), valeurs à
+relever pour la suite, étapes destructives, alternatives, questions
+posées à l'utilisateur, scénario de retour arrière. Le menu Scénarios
+ouvre le dossier.</p>
+
 <h2 id="navigation">Mode navigation (SFTP)</h2>
 
 <p>Une session SSH peut basculer (Ctrl+Maj+F) entre le terminal habituel
@@ -370,6 +444,13 @@ corbeille côté serveur : une suppression SFTP est définitive.</p>
 <tr><th scope="col">Touche</th><th scope="col">Action</th></tr>
 <tr><td>Ctrl+Maj+J</td><td>Utiliser une commande enregistrée</td></tr>
 <tr><td>Ctrl+Maj+M</td><td>Enregistrer la commande actuelle</td></tr>
+</table>
+
+<h3>Scénarios</h3>
+<table>
+<tr><th scope="col">Touche</th><th scope="col">Action</th></tr>
+<tr><td>Ctrl+Maj+Q</td><td>Lancer un scénario</td></tr>
+<tr><td>Ctrl+Maj+K</td><td>Arrêter le scénario en cours</td></tr>
 </table>
 
 <p>Dans les boîtes de gestion (commandes enregistrées, favoris de

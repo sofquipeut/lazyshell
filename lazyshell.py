@@ -45,7 +45,7 @@ from ssh import (
 )
 
 APP_NOM = "LazyShell"
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 
 # Dépôt GitHub public du projet, pour la vérification des mises à jour.
 URL_DERNIERE_RELEASE = "https://api.github.com/repos/sofquipeut/lazyshell/releases/latest"

@@ -189,6 +189,20 @@ confort ici : c'est le cahier des charges.**
   suppression...), fermé avec le reste dans `fermer()` — rouvrir un
   canal SFTP à chaque frappe aurait été un aller-retour réseau de plus
   à chaque action.
+- **Scénarios : procédures guidées décrites en données, pas en code.**
+  Fichiers TOML (`tomllib`, sans dépendance) dans `scenarios\` à côté de
+  l'exe ; seul `exemple.toml` est versionné (les autres décrivent un
+  vrai serveur). Moteur sans wx (`scenario.py`) séparé de l'interface
+  (`scenario_ui.py`, qui n'importe jamais `lazyshell`). Principes
+  arrêtés avec l'utilisateur, à ne pas assouplir : un scénario ne fait
+  rien de plus que ce qui est écrit ; pas à pas par défaut ; toute étape
+  destructive confirmée (Non par défaut) ; verdict par une boîte lue par
+  NVDA plutôt que par une annonce vocale, qui se faisait couper ; un
+  retour arrière n'est jamais enchaîné automatiquement (choisi puis
+  confirmé) ; simulation sans aucune exécution ; reprise après
+  interruption ; journal daté sans secret. Commandes exécutées par
+  `executeur.executer()` en mode normal (jamais interactif), sans
+  réécriture de listing. Détail des paliers dans le journal ci-dessous.
 
 ## Comment lancer et tester
 
@@ -1564,6 +1578,16 @@ L'environnement Python est dans `venv`. Utiliser
   conteneur tourne toujours, arrêter suffit. Vérifié par script
   (refus puis acceptation, enchaînement des deux scénarios, états de
   reprise) ; jamais exécuté en réel.
+
+- **Scénarios, palier 5 : documentation, version 1.8.0.** Section
+  « Scénarios » dans `docs\index.html` (sommaire, ancre `#scenarios`,
+  tableau de raccourcis Ctrl+Maj+Q / Ctrl+Maj+K), ligne de
+  fonctionnalité et raccourcis dans le README, décision de conception
+  ajoutée aux décisions arrêtées. Version 1.8.0 : les scénarios. Pas
+  encore fusionné dans `principal`, ni compilé, ni publié. Restent à
+  vérifier en conditions réelles : une vraie mise à jour Hermes (dont le
+  texte exact de la connexion email dans le journal de la gateway, et le
+  format des lignes `Name:` de `cron list`), et le retour arrière.
 
 ## Idées à reprendre plus tard
 

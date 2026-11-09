@@ -24,6 +24,16 @@ De plus, j'utilisais WinSCP en parallèle pour parcourir un serveur distant, afi
   Ctrl+C par Ctrl+Maj+K, et un bloc copiable à la fin. Les programmes
   plein écran (vim, htop...) sont refusés avec une explication (détail
   dans la [documentation](docs/index.html#interactif)).
+- Scénarios (Ctrl+Maj+Q) : une procédure écrite à l'avance dans un
+  fichier texte (TOML), jouée étape par étape dans la session courante.
+  Chaque résultat est vérifié et annoncé (OK ou Problème) ; en cas de
+  problème, une boîte propose de réessayer, une étape de rechange, de
+  continuer, un retour arrière (jamais lancé tout seul) ou d'arrêter, et
+  un rapport à copier. Pas à pas par défaut, confirmation des étapes
+  destructives, mode simulation qui n'exécute rien, reprise après une
+  interruption, journal daté sans secret. Un exemple sans effet est
+  fourni dans `scenarios\exemple.toml` (détail dans la
+  [documentation](docs/index.html#scenarios)).
 - Profils de connexion SSH, identifiants dans le
   Gestionnaire d'identifiants Windows, mémorisation de la clé d'hôte à la
   première connexion.
@@ -126,6 +136,13 @@ Tout est également accessible depuis la barre de menus.
 |---|---|
 | Ctrl+Maj+J | Utiliser une commande enregistrée |
 | Ctrl+Maj+M | Enregistrer la commande actuelle |
+
+**Scénarios**
+
+| Touche | Action |
+|---|---|
+| Ctrl+Maj+Q | Lancer un scénario |
+| Ctrl+Maj+K | Arrêter le scénario en cours |
 
 **Blocs de sortie**
 
