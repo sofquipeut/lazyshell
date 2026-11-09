@@ -30,7 +30,11 @@ REESSAYER = "reessayer"
 CONTINUER = "continuer"
 ARRETER = "arreter"
 ALTERNATIVE = "alternative"
-CHOIX_SIMPLES = (REESSAYER, CONTINUER, ARRETER)
+# Propose de lancer le scénario de retour arrière du fichier (champ
+# retour_arriere). Jamais automatique : l'utilisateur choisit, puis
+# confirme.
+RETOUR_ARRIERE = "retour_arriere"
+CHOIX_SIMPLES = (REESSAYER, CONTINUER, ARRETER, RETOUR_ARRIERE)
 SI_ECHEC_DEFAUT = [REESSAYER, ARRETER]
 
 # si_bon : étape suivante dans l'ordre du fichier, fin du scénario, ou
@@ -49,7 +53,7 @@ MOTIF_IDENTIFIANT = re.compile(r"^[a-z0-9_-]+$")
 # minuit, et le nom d'une sauvegarde ne correspondrait plus.
 VARIABLES_FOURNIES = ("date",)
 
-CLES_SCENARIO = {"nom", "description", "profil", "variables", "etape"}
+CLES_SCENARIO = {"nom", "description", "profil", "variables", "etape", "retour_arriere"}
 CLES_ETAPE = {
     "id", "titre", "commande", "question", "destructive", "attendu",
     "si_bon", "si_echec", "hors_sequence", "sortie_au_journal", "memoriser",
@@ -134,6 +138,9 @@ class Scenario:
     # contre une procédure lancée sur le mauvais serveur. Vide : n'importe
     # quelle session, locale comprise.
     profil: str = ""
+    # Nom de fichier du scénario de retour arrière, dans le même dossier.
+    # Vide : le choix « retour_arriere » n'est pas permis dans si_echec.
+    retour_arriere: str = ""
     variables: dict[str, str] = field(default_factory=dict)
     etapes: list[Etape] = field(default_factory=list)
 
@@ -246,7 +253,7 @@ def _lire_si_echec(valeur, ou: str) -> list:
             raise ErreurScenario(
                 f"{ou} : choix inconnu dans si_echec : {element!r}. "
                 "Possibles : \"reessayer\", \"continuer\", \"arreter\", "
-                "{ alternative = \"identifiant\" }."
+                "\"retour_arriere\", { alternative = \"identifiant\" }."
             )
     return choix
 
@@ -350,11 +357,20 @@ def charger_scenario(chemin: Path) -> Scenario:
     if not isinstance(nom, str) or not nom.strip():
         raise ErreurScenario("Scénario : nom manquant.")
     scenario = Scenario(chemin=chemin, nom=nom.strip())
-    for cle in ("description", "profil"):
+    for cle in ("description", "profil", "retour_arriere"):
         if cle in donnees:
             if not isinstance(donnees[cle], str):
                 raise ErreurScenario(f"Scénario : {cle} doit être une chaîne.")
             setattr(scenario, cle, donnees[cle].strip())
+    if scenario.retour_arriere:
+        cible = chemin_retour_arriere(scenario)
+        if cible.resolve() == chemin.resolve():
+            raise ErreurScenario("Scénario : retour_arriere ne peut pas désigner ce même fichier.")
+        if not cible.is_file():
+            raise ErreurScenario(
+                f"Scénario : le fichier de retour arrière « {scenario.retour_arriere} » "
+                "est introuvable dans le dossier des scénarios."
+            )
 
     variables = donnees.get("variables", {})
     if not isinstance(variables, dict):
@@ -429,7 +445,16 @@ def charger_scenario(chemin: Path) -> Scenario:
                     )
                 if choix[1] == etape.id:
                     raise ErreurScenario(f"{ou} : une étape ne peut pas être sa propre alternative.")
+            elif choix == RETOUR_ARRIERE and not scenario.retour_arriere:
+                raise ErreurScenario(
+                    f"{ou} : « retour_arriere » dans si_echec demande un champ "
+                    "retour_arriere en tête du fichier."
+                )
     return scenario
+
+
+def chemin_retour_arriere(scenario: Scenario) -> Path:
+    return scenario.chemin.parent / scenario.retour_arriere
 
 
 def lister_scenarios(dossier: Path) -> list[Path]:

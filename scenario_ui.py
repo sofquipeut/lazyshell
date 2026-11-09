@@ -27,7 +27,8 @@ from pathlib import Path
 import wx
 
 from scenario import (
-    ALTERNATIVE, ARRETER, CONTINUER, FIN, REESSAYER, SUIVANTE,
+    ALTERNATIVE, ARRETER, CONTINUER, FIN, REESSAYER, RETOUR_ARRIERE, SUIVANTE,
+    chemin_retour_arriere,
     ErreurScenario, JournalScenario, Scenario, charger_scenario, chemin_etat,
     effacer_etat, enregistrer_etat, extraire, lignes_apres, lire_etat, lister_scenarios,
     noms_memorises, rapport, substituer, variables_initiales,
@@ -371,6 +372,9 @@ class ExecutionScenario:
         # annonce alors le retour du focus dans la fenêtre, ce qui
         # couperait une annonce partie au même instant (voir _dire).
         self._boite_fermee = False
+        # Retour arrière choisi et confirmé : lancé une fois ce scénario
+        # terminé (voir _terminer), jamais pendant.
+        self._retour_demande = False
 
     # -- démarrage et arrêt (thread principal) -------------------------------
 
@@ -508,6 +512,8 @@ class ExecutionScenario:
                 suite = self._executer_etape(i)
                 if suite == ARRETER:
                     conclusion = f"arrêté à l'{self._libelle(i).lower()}"
+                    if self._retour_demande:
+                        conclusion += ", retour arrière demandé"
                     break
                 if suite == CONTINUER:
                     problemes_passes += 1
@@ -714,11 +720,23 @@ class ExecutionScenario:
         texte_rapport = rapport(
             self.scenario, libelle, etape, commande_bloc, sortie, code, problemes,
         )
-        choix = self._boite(
-            self._demander_suite, etape, libelle, raisons, sortie, texte_rapport,
-        )
-        if choix is None:
-            choix = ARRETER
+        while True:
+            choix = self._boite(
+                self._demander_suite, etape, libelle, raisons, sortie, texte_rapport,
+            )
+            if choix is None:
+                choix = ARRETER
+            if choix != RETOUR_ARRIERE:
+                break
+            # Choisi, puis encore confirmé : jamais de retour arrière lancé
+            # sur une seule touche. Non ramène à la boîte de problème.
+            if self._boite(self._confirmer_retour):
+                self._retour_demande = True
+                break
+        if choix == RETOUR_ARRIERE:
+            self.journal.evenement("Choix : retour arrière, confirmé.")
+            self._precedente = PROBLEME
+            return ARRETER
         self.journal.evenement(f"Choix : {self._nom_choix(choix)}")
         if choix == REESSAYER:
             self._precedente = "Nouvel essai"
@@ -834,6 +852,23 @@ class ExecutionScenario:
         finally:
             boite.Destroy()
 
+    def _confirmer_retour(self) -> bool:
+        nom = self.scenario.retour_arriere
+        try:
+            nom = charger_scenario(chemin_retour_arriere(self.scenario)).nom
+        except ErreurScenario:
+            pass
+        reponse = wx.MessageBox(
+            f"Le scénario « {self.scenario.nom} » s'arrête ici ; il pourra être "
+            f"repris plus tard.\n\nLancer maintenant le retour arrière « {nom} » ? "
+            "Il présentera chaque étape avant de la jouer, et demandera "
+            "confirmation avant chaque étape destructive.",
+            "Retour arrière",
+            wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
+            self.panneau.GetTopLevelParent(),
+        )
+        return reponse == wx.YES
+
     def _relire(self, libelle: str, etape, sortie: str):
         """Étape OK dont la sortie est à lire (relire = true) : le focus
         arrive directement sur la sortie. Renvoie BON pour continuer.
@@ -864,6 +899,8 @@ class ExecutionScenario:
                 choix.append((REESSAYER, "&Réessayer"))
             elif valeur == CONTINUER:
                 choix.append((CONTINUER, "&Continuer quand même"))
+            elif valeur == RETOUR_ARRIERE:
+                choix.append((RETOUR_ARRIERE, "&Lancer le retour arrière"))
             elif isinstance(valeur, tuple) and valeur[0] == ALTERNATIVE:
                 cible = self.scenario.etapes[self.scenario.index(valeur[1])]
                 choix.append((valeur, f"É&tape alternative : {cible.titre}"))
@@ -922,7 +959,31 @@ class ExecutionScenario:
             p.sortie.ShowPosition(bloc.debut + 1)
         else:
             p.saisie.SetFocus()
+        if self._retour_demande:
+            wx.CallAfter(self._lancer_retour)
         return True
+
+    def _lancer_retour(self) -> None:
+        """Lance le scénario de retour arrière, choisi et confirmé pendant
+        celui-ci. Mêmes gardes qu'un lancement depuis le menu : bon profil,
+        reprise proposée s'il avait lui-même été interrompu."""
+        p = self.panneau
+        if not p:
+            return
+        try:
+            retour = charger_scenario(chemin_retour_arriere(self.scenario))
+        except ErreurScenario as erreur:
+            wx.MessageBox(
+                f"Le scénario de retour arrière ne peut pas être chargé :\n{erreur}",
+                "Retour arrière", wx.OK | wx.ICON_ERROR, p.GetTopLevelParent(),
+            )
+            return
+        logging.info("Retour arrière lancé depuis %s : %s", self.scenario.nom, retour.nom)
+        demarrer_scenario(
+            p.GetTopLevelParent(), p, retour, simulation=False,
+            lire_commandes=self.lire_commandes, pas_a_pas=True,
+            dossier=self.dossier_journaux.parent, copier=self.copier, bip=self.bip,
+        )
 
 
 def lancer_scenario(fenetre, panneau, base: Path, copier, bip) -> None:
@@ -950,6 +1011,24 @@ def lancer_scenario(fenetre, panneau, base: Path, copier, bip) -> None:
         pas_a_pas = boite.case_pas_a_pas.GetValue()
     finally:
         boite.Destroy()
+    demarrer_scenario(
+        fenetre, panneau, scenario, simulation, lire_commandes, pas_a_pas,
+        dossier, copier, bip,
+    )
+
+
+def demarrer_scenario(
+    fenetre, panneau, scenario: Scenario, simulation: bool,
+    lire_commandes: bool, pas_a_pas: bool, dossier: Path, copier, bip,
+) -> None:
+    """Gardes communes à tout lancement (menu, ou retour arrière proposé
+    par un autre scénario) : bon profil, reprise d'une exécution
+    interrompue. Puis démarrage."""
+    if panneau.en_cours:
+        panneau.voix.dire(
+            "Une commande est déjà en cours dans cette session.", interrompre=True,
+        )
+        return
 
     # En simulation rien ne part vers le serveur : pas besoin d'être sur
     # le bon profil, on peut relire une procédure depuis n'importe où.

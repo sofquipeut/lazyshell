@@ -1543,6 +1543,28 @@ L'environnement Python est dans `venv`. Utiliser
   shell relue à la main, pas de `sh` local pour la vérifier ; jamais
   exécuté en réel à ce stade.
 
+- **Scénarios, palier 4 : retour arrière.** Champ `retour_arriere` en
+  tête d'un scénario (nom d'un autre fichier du même dossier, vérifié
+  au chargement) et choix `"retour_arriere"` dans `si_echec`, refusé
+  sans ce champ. Jamais automatique : bouton « Lancer le retour
+  arrière » dans la boîte de problème, puis une confirmation Oui/Non
+  (Non par défaut, Non ramène à la boîte de problème). Confirmé, le
+  scénario en cours s'arrête (son état de reprise reste) et le retour
+  arrière démarre une fois la boîte de fin fermée, en réel et pas à
+  pas, par `demarrer_scenario` (extrait de `lancer_scenario`) : mêmes
+  gardes que depuis le menu, bon profil et reprise proposée.
+  `hermes-retour-arriere.toml` (local) : section 5 de la fiche, puis
+  réparations et contrôles des sections 3 et 4 (recopiés : TOML n'a pas
+  d'inclusion). Deux sécurités ajoutées à la fiche : sauvegarde et
+  étiquettes de la date retenue (la plus récente) vérifiées avant toute
+  action, puis confirmées par une question avec la date en clair ; les
+  données actuelles sont sauvegardées (`hermes-avant-retour-...`) juste
+  avant d'être remplacées. Dans `hermes-mise-a-jour.toml`, le retour
+  arrière est proposé à partir de la recréation seulement : avant, l'ancien
+  conteneur tourne toujours, arrêter suffit. Vérifié par script
+  (refus puis acceptation, enchaînement des deux scénarios, états de
+  reprise) ; jamais exécuté en réel.
+
 ## Idées à reprendre plus tard
 
 Notées en passant, pas encore faites — pas de quoi se précipiter dessus
