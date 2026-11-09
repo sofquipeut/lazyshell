@@ -29,7 +29,7 @@ import wx
 from scenario import (
     ALTERNATIVE, ARRETER, CONTINUER, FIN, REESSAYER, SUIVANTE,
     ErreurScenario, JournalScenario, Scenario, charger_scenario, chemin_etat,
-    effacer_etat, enregistrer_etat, extraire, lire_etat, lister_scenarios,
+    effacer_etat, enregistrer_etat, extraire, lignes_apres, lire_etat, lister_scenarios,
     noms_memorises, rapport, substituer, variables_initiales,
     variables_manquantes, verifier,
 )
@@ -615,7 +615,13 @@ class ExecutionScenario:
             code, duree, interrompue = 0, 0.0, False
             problemes = [] if oui else ["réponse Non à la question"]
             commande_bloc = question
-        elif manquantes := variables_manquantes(commande, self.valeurs):
+        elif manquantes := variables_manquantes(
+            " ".join([
+                commande, etape.attendu.motif, etape.attendu.apres,
+                *etape.attendu.contient, *etape.attendu.interdit,
+            ]),
+            self.valeurs,
+        ):
             # Une valeur qu'une étape précédente devait mémoriser : on ne
             # lance pas une commande à moitié remplie.
             noms = ", ".join(manquantes)
@@ -641,8 +647,11 @@ class ExecutionScenario:
             if code == -1 and self.distant and not self.executeur.connexion_active:
                 problemes.insert(0, "connexion SSH perdue")
             commande_bloc = commande
-            if not problemes and not interrompue:
-                problemes = self._memoriser(etape, sortie)
+            # Même sur un problème : si l'utilisateur continue quand même,
+            # la suite a besoin de la valeur (une version inchangée, par
+            # exemple). Ne s'ajoute aux problèmes que si elle manque.
+            if not interrompue:
+                problemes += self._memoriser(etape, sortie)
 
         if interrompue or self._arret.is_set():
             self._sur_interface(
@@ -659,12 +668,12 @@ class ExecutionScenario:
         verdict = PROBLEME if problemes else BON
         sortie_bloc = sortie
         lues = [n for n in etape.memoriser if n in self.valeurs]
-        if lues and not problemes:
+        if lues:
             sortie_bloc = (sortie + "\n" if sortie else "") + "[Mémorisé : " + "; ".join(
                 f"{n} = {self.valeurs[n]}" for n in lues
             ) + ".]"
         if problemes:
-            sortie_bloc = (sortie + "\n" if sortie else "") + (
+            sortie_bloc = (sortie_bloc + "\n" if sortie_bloc else "") + (
                 "[Problème : " + "; ".join(problemes) + ".]"
             )
         self._sur_interface(
@@ -827,7 +836,13 @@ class ExecutionScenario:
 
     def _relire(self, libelle: str, etape, sortie: str):
         """Étape OK dont la sortie est à lire (relire = true) : le focus
-        arrive directement sur la sortie. Renvoie BON pour continuer."""
+        arrive directement sur la sortie. Renvoie BON pour continuer.
+        Avec apres, seules les lignes postérieures à l'heure de référence
+        sont montrées : ce sont les seules qui ont compté."""
+        if etape.attendu.apres:
+            sortie = lignes_apres(sortie, substituer(etape.attendu.apres, self.valeurs)) or (
+                "(aucune ligne depuis l'heure de référence)"
+            )
         boite = DialogueVerdict(
             self.panneau.GetTopLevelParent(),
             f"{BON}, à relire. {libelle}, {etape.titre}",

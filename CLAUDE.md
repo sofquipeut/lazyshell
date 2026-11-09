@@ -1518,6 +1518,31 @@ L'environnement Python est dans `venv`. Utiliser
   Masquage « bearer » limité à une valeur d'au moins 16 caractères (il
   masquait un mot dans une description de plugin).
 
+- **Scénarios, palier 3 : la mise à jour Hermes complète.** Nouveau
+  critère `apres` dans `attendu` : une heure AAAA-MM-JJ HH:MM:SS
+  (souvent une valeur mémorisée), seules les lignes de journal
+  horodatées à partir d'elle sont examinées, avec leurs lignes de suite
+  sans horodatage (`lignes_apres`, comparaison de texte : ce format
+  s'ordonne de lui-même) ; la boîte « à relire » n'affiche alors que
+  ces lignes. Une valeur pas encore connue est maintenant cherchée aussi
+  dans les résultats attendus (un `interdit = "{{version_avant}}"` non
+  rempli aurait laissé passer n'importe quoi) ; une valeur est mémorisée
+  même quand l'étape pose problème, pour qu'un « Continuer quand même »
+  laisse la suite en état de marche. `hermes-mise-a-jour.toml` (local)
+  reprend les sections 0, 1, 3 et 4 de la fiche (3.6 omise : inutile
+  après une recréation) : version de la nouvelle image comparée à celle
+  en service (repli sur `pyproject.toml` en alternative), `compose pull`
+  à relire, recréation et piège du volume nommé (1.5) en chaîne
+  d'alternatives destructives qui revient vérifier la version,
+  réparations, arrêt et relance de la gateway avec l'heure de relance
+  prise dans le conteneur (même fuseau que son journal), contrôles dont
+  les quatre « Connected to Telegram » et l'absence de niveau `ERROR`
+  depuis la relance. Garde ajoutée à la fiche au point 3.5 : si la
+  gateway est le processus 1 du conteneur, rien n'est tué (la tuer
+  arrêterait le conteneur, incident déjà vécu, code 143). Syntaxe
+  shell relue à la main, pas de `sh` local pour la vérifier ; jamais
+  exécuté en réel à ce stade.
+
 ## Idées à reprendre plus tard
 
 Notées en passant, pas encore faites — pas de quoi se précipiter dessus

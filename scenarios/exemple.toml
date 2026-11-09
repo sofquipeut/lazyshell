@@ -40,6 +40,9 @@ commande = '''echo {{salut}}'''
 #   nombre_min       avec motif : nombre minimal de fois (1 par défaut) ;
 #   nombre_max       avec motif : nombre maximal de fois ;
 #   respecter_casse  false par défaut : majuscules et minuscules confondues.
+#   apres            une heure AAAA-MM-JJ HH:MM:SS, souvent une valeur
+#                    mémorisée : dans un journal, seules les lignes
+#                    horodatées à partir de cette heure sont examinées.
 attendu = { code = 0, contient = "bonjour" }
 
 [[etape]]

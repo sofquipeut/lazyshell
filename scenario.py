@@ -57,8 +57,12 @@ CLES_ETAPE = {
 }
 CLES_ATTENDU = {
     "code", "contient", "interdit", "motif", "nombre_min", "nombre_max",
-    "respecter_casse",
+    "respecter_casse", "apres",
 }
+
+# Horodatage en tête de ligne d'un journal (« 2026-11-03 01:13:23,841 »
+# ou « 2026-11-03T01:13:23 ») : sert au critère apres.
+MOTIF_HORODATAGE = re.compile(r"^(\d{4}-\d\d-\d\d)[ T](\d\d:\d\d:\d\d)")
 
 # Masquage dans le journal : une valeur qui suit un mot comme password ou
 # token. Les scénarios ne transportent aucun secret (les mots de passe
@@ -89,6 +93,11 @@ class Attendu:
     nombre_min: int | None = None
     nombre_max: int | None = None
     respecter_casse: bool = False
+    # Heure « AAAA-MM-JJ HH:MM:SS » (souvent une valeur mémorisée) : seules
+    # les lignes horodatées à partir de cette heure sont examinées, avec
+    # leurs lignes de suite sans horodatage. Pour lire un journal sans
+    # se fier à un ancien démarrage.
+    apres: str = ""
 
 
 @dataclass
@@ -195,7 +204,30 @@ def _lire_attendu(donnees, ou: str) -> Attendu:
         if not isinstance(donnees["respecter_casse"], bool):
             raise ErreurScenario(f"{ou} : respecter_casse doit valoir true ou false.")
         attendu.respecter_casse = donnees["respecter_casse"]
+    if "apres" in donnees:
+        if not isinstance(donnees["apres"], str) or not donnees["apres"].strip():
+            raise ErreurScenario(f"{ou} : apres doit être une heure, ou une valeur mémorisée.")
+        attendu.apres = donnees["apres"].strip()
     return attendu
+
+
+def lignes_apres(sortie: str, seuil: str) -> str:
+    """Garde les lignes horodatées à partir de seuil, et les lignes sans
+    horodatage qui les suivent (suite d'un message sur plusieurs lignes).
+    Comparaison de texte : le format AAAA-MM-JJ HH:MM:SS s'ordonne de
+    lui-même."""
+    trouve = MOTIF_HORODATAGE.match(seuil.strip())
+    if trouve is None:
+        return ""
+    seuil_normal = f"{trouve.group(1)} {trouve.group(2)}"
+    gardees, garder = [], False
+    for ligne in sortie.splitlines():
+        horodatage = MOTIF_HORODATAGE.match(ligne)
+        if horodatage:
+            garder = f"{horodatage.group(1)} {horodatage.group(2)}" >= seuil_normal
+        if garder:
+            gardees.append(ligne)
+    return "\n".join(gardees)
 
 
 def _lire_si_echec(valeur, ou: str) -> list:
@@ -375,7 +407,7 @@ def charger_scenario(chemin: Path) -> Scenario:
     for numero, etape in enumerate(scenario.etapes, start=1):
         ou = f"Étape {numero} ({etape.id})"
         a = etape.attendu
-        textes = [etape.commande, etape.question, a.motif, *a.contient, *a.interdit]
+        textes = [etape.commande, etape.question, a.motif, a.apres, *a.contient, *a.interdit]
         for texte in textes:
             for utilise in _noms_utilises(texte):
                 if utilise not in connus:
@@ -457,6 +489,13 @@ def verifier(attendu: Attendu, sortie: str, code: int, valeurs: dict[str, str]) 
     if code not in attendu.code:
         attendus = " ou ".join(str(c) for c in attendu.code)
         problemes.append(f"code de retour {code} au lieu de {attendus}")
+
+    if attendu.apres:
+        seuil = substituer(attendu.apres, valeurs)
+        if MOTIF_HORODATAGE.match(seuil.strip()) is None:
+            problemes.append(f"heure de référence inconnue ou invalide : {seuil}")
+            return problemes
+        sortie = lignes_apres(sortie, seuil)
 
     def normaliser(t: str) -> str:
         return t if attendu.respecter_casse else t.casefold()
